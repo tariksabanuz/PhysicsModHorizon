@@ -1,0 +1,113 @@
+[mod]
+id = "horizon_physics"
+version = "0.1.0"
+priority = 100
+
+[compatibility]
+horizon_revision = "9d979caa48a3bb58203319b9ea044db58c38e0d8"
+
+# The solver, the pieces and the settings. In the client library, so the mob hooks there and the
+# game's hooks can both reach it.
+[[module]]
+id = "runtime"
+file = "crates/horizon-client/src/lib.rs"
+name = "native_horizon_physics"
+source = "runtime.rs"
+visibility = "pub"
+
+# Options > Mods: the row and its settings page.
+[[injection]]
+id = "listed"
+hook = "mods"
+hook_version = 1
+kind = "HEAD"
+helper = "listed.rs"
+bindings = [{ name = "mods", ty = "&mut Vec<crate::game::native_hooks::NativeMod>", value = "&mut *mods" }]
+
+[[injection]]
+id = "settings"
+hook = "settings"
+hook_version = 1
+kind = "HEAD"
+helper = "settings.rs"
+bindings = [
+  { name = "mod_id", ty = "&str", value = "mod_id" },
+  { name = "buttons", ty = "&mut Vec<String>", value = "&mut *buttons" },
+]
+
+[[injection]]
+id = "settings-click"
+hook = "settings_click"
+hook_version = 1
+kind = "HEAD"
+helper = "settings_click.rs"
+bindings = [
+  { name = "mod_id", ty = "&str", value = "mod_id" },
+  { name = "button", ty = "usize", value = "button" },
+]
+
+# ClientLevel.addDestroyBlockEffect: the block crumbles into pieces instead of particles.
+[[injection]]
+id = "destroy"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::Game<'_>::destroy_particles"
+helper = "destroy.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "pos", ty = "[i32; 3]", value = "pos" },
+  { name = "state", ty = "BlockStateId", value = "state" },
+]
+
+# A dying mob is drawn once more into the buffer, its parts are cut out and turned into a ragdoll;
+# the mob itself is not drawn any more.
+[[injection]]
+id = "mob"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::mobs::render::render_with"
+helper = "mob.rs"
+bindings = [
+  { name = "m", ty = "&Mob", value = "m" },
+  { name = "alpha", ty = "f32", value = "alpha" },
+  { name = "camera", ty = "glam::DVec3", value = "camera" },
+  { name = "atlas", ty = "Atlas", value = "atlas" },
+  { name = "light", ty = "u32", value = "light" },
+  { name = "data", ty = "&MobData", value = "data" },
+  { name = "extra", ty = "&[(&Part, [f32; 4], u32, u32)]", value = "extra" },
+  { name = "out", ty = "&mut Vec<Vertex>", value = "&mut *out" },
+]
+
+# Where each model part starts, while a dying mob is captured.
+[[injection]]
+id = "part"
+kind = "HEAD"
+target = "horizon_client::mobs::render::draw_normals"
+helper = "part.rs"
+bindings = [{ name = "out", ty = "&Vec<Vertex>", value = "&*out" }]
+
+# Once a frame, beside the other camera-relative entity geometry: step and draw the pieces.
+[[injection]]
+id = "world"
+kind = "HEAD"
+target = "horizon_client::game::end::Game<'_>::end_geometry"
+helper = "world.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "self" },
+  { name = "camera", ty = "glam::DVec3", value = "camera" },
+  { name = "out", ty = "&mut Vec<Vertex>", value = "&mut *out" },
+]
+
+# ItemEntityRenderer: dropped items tumble and lie flat instead of bobbing and spinning.
+[[injection]]
+id = "items"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::item_draw::Game<'_>::dropped_item_geometry"
+helper = "items.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "self" },
+  { name = "camera", ty = "glam::DVec3", value = "camera" },
+  { name = "alpha", ty = "f64", value = "alpha" },
+  { name = "out", ty = "&mut Vec<Vertex>", value = "&mut *out" },
+]
