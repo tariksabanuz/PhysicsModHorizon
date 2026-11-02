@@ -96,6 +96,10 @@ fn horizon_physics_world(game: &crate::game::Game<'_>, camera: glam::DVec3, out:
         // Velocity is in blocks a tick.
         hp::player_water([feet.x, feet.y, feet.z], wet, -p.velocity.y * 20.0);
     }
+    // The player shoves the ragdolls and pieces in their way.
+    hp::set_player(game.player.as_ref().filter(|p| !p.spectator).map(|p| {
+        ([p.position.x, p.position.y, p.position.z], [p.velocity.x * 20.0, p.velocity.y * 20.0, p.velocity.z * 20.0])
+    }));
     let cell = |x: i32, y: i32, z: i32| -> hp::Cell {
         let state = game.world.block(x, y, z);
         if game.world.is_air(state) {

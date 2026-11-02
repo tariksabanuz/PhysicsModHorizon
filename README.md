@@ -8,6 +8,7 @@ brings PhysicsMod-style physics to the client, written from scratch:
 - **Mob ragdolls**: a mob that dies drops as a ragdoll: its model parts (head, body, arms, legs) stay
   joined where they meet and fall limply.
 - **Mobs falling apart**: or the parts come loose and tumble separately (or a mix of both).
+- **Shoving**: walk into a ragdoll or a pile of pieces and you push them along; they tumble away.
 - **Item physics**: dropped items tumble while they fly and lie flat on the ground instead of floating
   and spinning.
 - **Explosions**: TNT, creepers, beds and the rest blow their blocks apart: the pieces are thrown out
@@ -17,12 +18,14 @@ brings PhysicsMod-style physics to the client, written from scratch:
   that rises, swirls, drifts with the wind and gathers and spreads under ceilings, and glowing embers.
 - **Snow**: walking on snow presses footprints, left and right, with a blue shadow in them, and kicks
   up powder; the snow fills them in again over 30 seconds.
-- **Ropes**: leads (round, lit) and fishing lines sag, swing and lie on the blocks.
+- **Ropes**: leads (round, lit, heavy: the wind barely moves them) and fishing lines sag, swing and
+  lie on the blocks.
 - **Cloth capes**: capes are cloth that the air drags: they trail and lift when you run, blow out in
   the wind and hang down when you stand.
-- **Water**: the surface rises and falls in swell (rougher in wind, rain and thunder) and is lit as
-  water: the sky mirrored at a glancing angle, the sun and moon glittering on the ripples, froth on
-  the crests in a storm.
+- **Water**: the open sea (water at sea level) rolls in a real swell, a block and more from trough to
+  crest with sharp crests, deep blue-green with clear teal where the sun shines through; lakes, rivers
+  and ponds above sea level only lap. All of it rougher in wind, rain and thunder, lit as water: the
+  sky mirrored at a glancing angle, the sun and moon glittering on the ripples, froth on the crests.
 - **Swaying plants**: leaves rustle, grass, flowers and crops bend in gusts that sweep across the
   fields, vines swing, seagrass and kelp move in the current. Lava heaves slowly.
 - **Liquids (beta)**: water or lava you pour splashes out as droplets that run over the blocks before

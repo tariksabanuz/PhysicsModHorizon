@@ -189,14 +189,47 @@ fn horizon_physics_wave(w: vec4<f32>, p: vec2<f32>, t: f32, seed: f32, pace: f32
 fn horizon_physics_storm() -> f32 {
     return clamp(0.42 + HORIZON_PHYSICS_WIND * 0.3 + frame.rain * 0.35 + frame.thunder * 0.55, 0.15, 1.6);
 }
-// The swell at world point p (x, z): long waves carry most of the height, short ones ride on them.
-fn horizon_physics_swell(p: vec2<f32>, t: f32) -> vec3<f32> {
-    var r = horizon_physics_wave(vec4(0.83, 0.56, 15.0, 0.15), p, t, 0.0, 0.55);
-    r += horizon_physics_wave(vec4(0.39, 0.92, 9.5, 0.095), p, t, 1.7, 0.55);
-    r += horizon_physics_wave(vec4(0.97, -0.24, 6.8, 0.06), p, t, 3.4, 0.55);
-    r += horizon_physics_wave(vec4(0.60, 0.80, 4.4, 0.035), p, t, 5.1, 0.55);
-    r += horizon_physics_wave(vec4(-0.20, 0.98, 3.1, 0.02), p, t, 6.8, 0.55);
+// The swell at world point p (x, z): long waves carry most of the height, short ones ride on
+// them. The open sea (`ocean`) has a real swell, a block and more from trough to crest; lakes,
+// ponds and rivers above sea level only lap.
+fn horizon_physics_swell(p: vec2<f32>, t: f32, ocean: bool) -> vec3<f32> {
+    var r = vec3(0.0);
+    if (ocean) {
+        r = horizon_physics_wave(vec4(0.83, 0.56, 34.0, 0.5), p, t, 0.0, 0.42);
+        r += horizon_physics_wave(vec4(0.45, 0.89, 21.0, 0.3), p, t, 1.7, 0.42);
+        r += horizon_physics_wave(vec4(0.97, -0.24, 13.0, 0.17), p, t, 3.4, 0.45);
+        r += horizon_physics_wave(vec4(0.62, 0.78, 8.5, 0.09), p, t, 5.1, 0.5);
+        r += horizon_physics_wave(vec4(-0.2, 0.98, 5.5, 0.045), p, t, 6.8, 0.5);
+    } else {
+        r = horizon_physics_wave(vec4(0.83, 0.56, 15.0, 0.06), p, t, 0.0, 0.55);
+        r += horizon_physics_wave(vec4(0.39, 0.92, 9.5, 0.04), p, t, 1.7, 0.55);
+        r += horizon_physics_wave(vec4(0.97, -0.24, 6.8, 0.025), p, t, 3.4, 0.55);
+        r += horizon_physics_wave(vec4(0.60, 0.80, 4.4, 0.015), p, t, 5.1, 0.55);
+    }
     return r * horizon_physics_storm();
+}
+// Gerstner's sideways motion of the sea's surface: the water gathers under the crests, which
+// turn sharp, and spreads in the troughs, which turn broad.
+fn horizon_physics_chop_wave(w: vec4<f32>, p: vec2<f32>, t: f32, seed: f32, pace: f32) -> vec2<f32> {
+    let k = 6.2831853 / w.z;
+    let ph = k * dot(w.xy, p) - sqrt(9.8 * k) * pace * t + seed;
+    return -w.xy * (w.w * cos(ph));
+}
+fn horizon_physics_chop(p: vec2<f32>, t: f32) -> vec2<f32> {
+    var c = horizon_physics_chop_wave(vec4(0.83, 0.56, 34.0, 0.5), p, t, 0.0, 0.42);
+    c += horizon_physics_chop_wave(vec4(0.45, 0.89, 21.0, 0.3), p, t, 1.7, 0.42);
+    c += horizon_physics_chop_wave(vec4(0.97, -0.24, 13.0, 0.17), p, t, 3.4, 0.45);
+    c += horizon_physics_chop_wave(vec4(0.62, 0.78, 8.5, 0.09), p, t, 5.1, 0.5);
+    return c * 0.35 * horizon_physics_storm();
+}
+// Whether a water surface at world height y (before the swell moves it) is the sea: sea level
+// is 63, so the sea's top blocks are at y = 62.
+fn horizon_physics_is_sea(y: f32) -> bool {
+    return abs(y - 62.89) < 0.12;
+}
+// How far out the water moves: all of it close by, none past the shape's reach.
+fn horizon_physics_reach(dist: f32) -> f32 {
+    return 1.0 - smoothstep(72.0, 104.0, dist);
 }
 // Ripples: only in the surface's light, never in its shape. Returns the slope.
 fn horizon_physics_ripples(p: vec2<f32>, t: f32) -> vec2<f32> {
@@ -242,7 +275,7 @@ fn horizon_physics_sway(pos: vec3<f32>, uv: vec2<f32>, layer: u32) -> vec3<f32> 
     if (kind == 0u) { return vec3(0.0); }
     let dist = length(pos);
     // Only close by: far away it would not show, and it stops at the same distance for all.
-    let near = 1.0 - smoothstep(48.0, 64.0, dist);
+    let near = select(1.0 - smoothstep(48.0, 64.0, dist), horizon_physics_reach(dist), kind == 5u);
     if (near <= 0.0) { return vec3(0.0); }
     let world = pos + frame.camera_position;
     let t = frame.time;
@@ -279,8 +312,11 @@ fn horizon_physics_sway(pos: vec3<f32>, uv: vec2<f32>, layer: u32) -> vec3<f32> 
             if (f > 0.02 && f < 0.98) {
                 if (kind == 5u) {
                     // The swell, around a level a little under the still surface.
-                    let s = horizon_physics_swell(world.xz, t);
-                    off = vec3(0.0, s.x - 0.04, 0.0);
+                    let sea = horizon_physics_is_sea(world.y);
+                    let s = horizon_physics_swell(world.xz, t, sea);
+                    var side = vec2(0.0);
+                    if (sea) { side = horizon_physics_chop(world.xz, t); }
+                    off = vec3(side.x, s.x - 0.04, side.y);
                 } else {
                     // Lava: a slow, heavy heave.
                     let tt = t * 0.3;
@@ -311,8 +347,9 @@ fn horizon_physics_sway(pos: vec3<f32>, uv: vec2<f32>, layer: u32) -> vec3<f32> 
     return off * near;
 }
 // The water's surface, lit as water: the swell and ripples bend the light, the sky is mirrored
-// more at a glancing angle (Fresnel), the sun glitters on it. `color` is the material's.
-fn horizon_physics_surface(layer: u32, pos: vec3<f32>, light: vec2<f32>, color: vec4<f32>) -> vec4<f32> {
+// more at a glancing angle (Fresnel), the sun glitters on it, light shines through the crests.
+// `color` is the material's; `lightmap` vanilla's light colour here.
+fn horizon_physics_surface(layer: u32, pos: vec3<f32>, light: vec2<f32>, lightmap: vec3<f32>, color: vec4<f32>) -> vec4<f32> {
     // The face's own normal, before any branch (derivatives need the whole quad).
     let geo = cross(dpdx(pos), dpdy(pos));
     if (!HORIZON_PHYSICS_SHADE || horizon_physics_kind(layer) != 5u) { return color; }
@@ -320,34 +357,56 @@ fn horizon_physics_surface(layer: u32, pos: vec3<f32>, light: vec2<f32>, color: 
     if (!up || frame.eye_in == 1u) { return color; }
     let world = pos + frame.camera_position;
     let t = frame.time;
-    let s = horizon_physics_swell(world.xz, t);
-    let r = horizon_physics_ripples(world.xz, t);
     let dist = length(pos);
+    let reach = horizon_physics_reach(dist);
+    // The sea: where the surface, less the sea's swell, is at sea level.
+    let sea_swell = horizon_physics_swell(world.xz, t, true);
+    let sea = horizon_physics_is_sea(world.y - (sea_swell.x - 0.04) * reach) || (reach <= 0.0 && horizon_physics_is_sea(world.y));
+    var s = sea_swell;
+    if (!sea) { s = horizon_physics_swell(world.xz, t, false); }
+    let r = horizon_physics_ripples(world.xz, t);
     // Far away the small waves blur into one.
-    let detail = 1.0 - smoothstep(24.0, 90.0, dist);
-    let slope = s.yz + r * detail;
-    var n = normalize(vec3(-slope.x, 1.0, -slope.y));
+    let detail = 1.0 - smoothstep(24.0, 110.0, dist);
+    let slope = s.yz * max(reach, 0.25) + r * detail;
+    let n = normalize(vec3(-slope.x, 1.0, -slope.y));
     let v = normalize(-pos);
     let cosv = clamp(dot(n, v), 0.0, 1.0);
     let fresnel = 0.02 + 0.98 * pow(1.0 - cosv, 5.0);
     let refl = reflect(-v, n);
-    // The sky it mirrors: the horizon's haze below, the sky's colour above.
+    // How bright it is here: the light colour of the sky light (dark at night, under trees).
+    let bright = max(max(lightmap.r, lightmap.g), lightmap.b);
     let skylight = smoothstep(0.0, 1.0, light.y);
+    // The sky it mirrors: the horizon's haze below, the sky's colour above.
     let sky = mix(frame.fog_color, frame.sky_color, clamp(refl.y * 2.5, 0.0, 1.0)) * (0.25 + 0.75 * skylight);
     let sun = normalize(frame.sun_direction);
     let day = smoothstep(-0.05, 0.2, sun.y);
     let rs = max(dot(refl, sun), 0.0);
     let glitter = (pow(rs, 900.0) * 9.0 + pow(rs, 120.0) * 0.9 + pow(rs, 18.0) * 0.08) * day * skylight * (1.0 - frame.rain * 0.92);
     let moon = pow(max(dot(refl, normalize(frame.moon_direction)), 0.0), 400.0) * 1.5 * (1.0 - day) * skylight;
-    // Body colour: the material's, a little deeper in the troughs and lighter on the crests.
-    let crest = clamp(s.x / (0.32 * horizon_physics_storm()), -1.0, 1.0);
-    var body = color.rgb * (0.88 + 0.16 * crest);
-    var rgb = mix(body, sky, clamp(fresnel * 0.9, 0.0, 1.0));
+    let height = clamp(s.x / (0.75 * horizon_physics_storm()), -1.0, 1.0);
+    var body = color.rgb * (0.88 + 0.16 * height);
+    if (sea) {
+        // The open sea's own colour: deep blue-green in the troughs, clear teal where the light
+        // comes through a crest from behind (towards the sun).
+        let deep = vec3(0.01, 0.055, 0.09);
+        let shallow = vec3(0.04, 0.27, 0.3);
+        let tint = color.rgb / max(max(color.r, max(color.g, color.b)), 0.001);
+        var sea_rgb = mix(deep, shallow, 0.45 + 0.45 * height);
+        let behind = pow(clamp(dot(-v, vec3(sun.x, 0.0, sun.z)) * 0.5 + 0.5, 0.0, 1.0), 2.0);
+        let through = smoothstep(0.1, 0.9, height) * behind * day * 0.35;
+        sea_rgb += vec3(0.08, 0.42, 0.4) * through;
+        sea_rgb *= mix(vec3(1.0), tint, 0.25);
+        // The sun lights the slopes that face it: the waves' shapes show.
+        let lit = 0.6 + 0.6 * max(dot(n, sun), 0.0) * day + 0.15 * (1.0 - day);
+        body = mix(color.rgb, sea_rgb * (0.35 + 0.65 * bright) * 1.35 * lit, 0.9);
+    }
+    var rgb = mix(body, sky, clamp(fresnel * select(0.9, 0.75, sea), 0.0, 1.0));
     rgb += vec3(1.0, 0.93, 0.78) * glitter + vec3(0.75, 0.82, 1.0) * moon;
-    // A thin froth on the highest crests in rough weather.
-    let foam = smoothstep(0.78, 1.0, crest) * smoothstep(0.7, 1.3, horizon_physics_storm()) * 0.35;
+    // Froth on the highest crests, more in rough weather.
+    let foam = smoothstep(0.82, 1.0, height) * smoothstep(0.5, 1.2, horizon_physics_storm()) * select(0.2, 0.45, sea);
     rgb = mix(rgb, vec3(0.92, 0.95, 0.97) * (0.3 + 0.7 * skylight), foam);
-    let a = clamp(mix(color.a, 1.0, fresnel) + glitter + foam, 0.0, 1.0);
+    let opaque = select(color.a, 0.92, sea);
+    let a = clamp(mix(opaque, 1.0, fresnel) + glitter + foam, 0.0, 1.0);
     return vec4(rgb, a);
 }
 "#;
@@ -369,7 +428,7 @@ pub fn patch(entries: &str, source: &str) -> Option<String> {
     let mut patched = entries.replace(AT, "let pos = position + origin + horizon_physics_sway(position + origin, uv, layer);");
     if shade {
         patched = patched
-            .replace(COLOR, "return horizon_physics_surface(in.layer, in.position, in.light, material(MaterialInput(")
+            .replace(COLOR, "return horizon_physics_surface(in.layer, in.position, in.light, in.lightmap, material(MaterialInput(")
             .replace(COLOR_END, ")).color);");
     } else {
         // Called by nobody, but present so the text is the same shape either way.

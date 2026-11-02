@@ -774,7 +774,7 @@ fn a_turning_cape_keeps_hanging() {
     }
 }
 
-// --- 0.4.1 ----------------------------------------------------------------------------------
+// --- 0.5.0 ----------------------------------------------------------------------------------
 
 #[test]
 fn poured_water_spreads_settles_and_goes() {
@@ -987,4 +987,50 @@ fn a_lead_hangs_still_in_the_wind() {
     let swing = side.iter().fold(f64::MIN, |m, z| m.max(*z)) - side.iter().fold(f64::MAX, |m, z| m.min(*z));
     assert!(max < 0.2, "the wind blows the lead aside: {max}");
     assert!(swing < 0.02, "it keeps swinging: {swing}");
+}
+
+#[test]
+fn walking_into_a_ragdoll_pushes_it() {
+    let w = Flat { pillar: None, water_above: false };
+    let mut p = Physics::default();
+    let (verts, marks) = humanoid();
+    p.spawn_mob(&verts, &marks, v3(0.0, 65.6, -4.0), V3::default(), 1, 100.0);
+    run(&mut p, &w, 4.0);
+    let center = |p: &Physics| p.bodies.iter().map(|b| b.x.x).sum::<f64>() / p.bodies.len() as f64;
+    let before = center(&p);
+    let z = p.bodies.iter().map(|b| b.x.z).sum::<f64>() / p.bodies.len() as f64;
+    // The player walks through it along +x at 4.3 blocks a second.
+    for i in 0..90 {
+        let x = before - 1.5 + f64::from(i) * 4.3 / 60.0;
+        p.shove(v3(x, 64.0, z), v3(4.3, 0.0, 0.0));
+        p.step(1.0 / 60.0, 20.0, &w);
+    }
+    let after = center(&p);
+    assert!(after > before + 0.5, "not pushed along: {before} -> {after}");
+    for b in &p.bodies {
+        assert!(b.x.y > 63.95, "pushed into the floor: {:?}", b.x);
+    }
+}
+
+#[test]
+fn a_lead_keeps_its_shape_as_the_mob_walks_off() {
+    let w = Flat { pillar: None, water_above: false };
+    let mut env = Env::default();
+    let a = v3(0.0, 66.0, 0.0);
+    let mut last: Option<V3> = None;
+    let mut jump: f64 = 0.0;
+    for f in 0..600 {
+        // The mob walks from 2 to 8 blocks away and back.
+        let d = 5.0 - 3.0 * (f64::from(f as u32) / 100.0).cos();
+        let b = v3(d, 65.0, 0.0);
+        env.step(1.0 / 60.0, a, f, &Settings::default(), &w);
+        let pts = env.rope(0, a, b, 0.12, 1.0 / 60.0, 20.0, V3::default(), &w);
+        let mid = pts[pts.len() / 2];
+        if let Some(l) = last && f > 60 {
+            jump = jump.max((mid - l).len());
+        }
+        last = Some(mid);
+    }
+    assert_eq!(env.ropes.len(), 1, "a new rope was started");
+    assert!(jump < 0.15, "the lead jumps: {jump}");
 }

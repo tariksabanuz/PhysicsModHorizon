@@ -19,7 +19,7 @@ use crate::mesher::Vertex;
 
 pub const ID: &str = "horizon_physics";
 pub const NAME: &str = "Horizon Physics";
-pub const VERSION: &str = "0.4.1";
+pub const VERSION: &str = "0.5.0";
 pub const DESCRIPTION: &str =
     "By tariksabanuz. Blocks crumble and blow apart, ragdolls, items, smoke, ropes, capes, liquids, waves and swaying plants.";
 
@@ -1674,6 +1674,16 @@ pub fn spawn_mob(verts: &[Vertex], marks: &[usize], start: usize, camera: [f64; 
 /// Once a frame: step the pieces and draw them. `dim` tells dimensions apart; a change, or a big
 /// jump of the camera (a teleport, another world), clears them. `white` is a plain white texel of
 /// the atlas, for smoke, sparks and footprints.
+static PLAYER: Mutex<Option<(V3, V3)>> = Mutex::new(None);
+
+/// The player this frame: feet and velocity (blocks a second), or None (spectating, no player).
+/// Ragdolls and pieces they walk into are pushed away.
+pub fn set_player(player: Option<([f64; 3], [f64; 3])>) {
+    if let Ok(mut p) = PLAYER.lock() {
+        *p = player.map(|(f, v)| (v3(f[0], f[1], f[2]), v3(v[0], v[1], v[2])));
+    }
+}
+
 pub fn frame(dim: u8, camera: [f64; 3], white: [f32; 4], world: &dyn World, out: &mut Vec<Vertex>) {
     let st = settings();
     with(|s| {
@@ -1694,6 +1704,9 @@ pub fn frame(dim: u8, camera: [f64; 3], white: [f32; 4], world: &dyn World, out:
         let frame = s.frame;
         s.items.retain(|_, (_, seen)| frame - *seen < 120);
         blow_pending(s, &st);
+        if let Some((feet, vel)) = PLAYER.lock().ok().and_then(|p| *p) {
+            s.physics.shove(feet, vel);
+        }
         s.physics.step(dt, st.gravity(), world);
         s.physics.emit(cam, world, out);
         s.env.step(s.last_dt, cam, frame, &st, world);
@@ -2576,25 +2589,36 @@ impl Env {
     pub fn rope(&mut self, group: u8, a: V3, b: V3, slack: f64, dt: f64, g: f64, wind: V3, world: &dyn World) -> Vec<V3> {
         let frame = self.frame;
         let dist = (b - a).len();
-        let n = ((dist * 4.0).round() as usize).clamp(10, 40);
+        // A fixed number of segments, as vanilla's lead (24): the rope never has to be cut up
+        // again as its ends move apart or together.
+        let want = 24;
+        // Last frame's rope with the nearest ends, whatever its number of points: the lead of a
+        // mob that walks off keeps its shape instead of starting again from a straight line.
         let best = self
             .ropes
             .iter()
             .enumerate()
-            .filter(|(_, r)| r.group == group && r.seen != frame + 1 && r.pts.len() == n + 1)
-            .map(|(i, r)| (i, (r.pts[0] - a).len() + (r.pts[n] - b).len()))
+            .filter(|(_, r)| r.group == group && r.seen != frame + 1 && r.pts.len() >= 2)
+            .map(|(i, r)| (i, (r.pts[0] - a).len() + (r.pts[r.pts.len() - 1] - b).len()))
             .filter(|(_, d)| *d < 2.5)
             .fold(None, |acc: Option<(usize, f64)>, x| if acc.is_none_or(|y| x.1 < y.1) { Some(x) } else { acc });
         let i = match best {
             Some((i, _)) => i,
             None => {
-                let pts: Vec<V3> = (0..=n).map(|k| a + (b - a) * (k as f64 / n as f64)).collect();
+                let pts: Vec<V3> = (0..=want).map(|k| a + (b - a) * (k as f64 / want as f64)).collect();
                 self.ropes.push(Rope { prev: pts.clone(), pts, seen: frame + 1, group });
                 self.ropes.len() - 1
             }
         };
         let r = &mut self.ropes[i];
         r.seen = frame + 1;
+        // Far more or fewer points than its length needs now: the same curve, resampled.
+        let old = r.pts.len() - 1;
+        if old * 2 < want || old > want * 2 {
+            r.pts = resample(&r.pts, want);
+            r.prev = resample(&r.prev, want);
+        }
+        let n = r.pts.len() - 1;
         let rest = dist * (1.0 + slack) / n as f64;
         let steps = 3;
         let h = dt.clamp(0.0, 0.05) / steps as f64;
@@ -2603,7 +2627,7 @@ impl Env {
                 let p = r.pts[k];
                 // Air drag damps the swing; a lead is heavy, so the wind barely moves it (a
                 // fishing line, light, a little more).
-                let vel = (p - r.prev[k]) * 0.96;
+                let vel = (p - r.prev[k]) * if group == 0 { 0.9 } else { 0.95 };
                 r.prev[k] = p;
                 let blow = if group == 0 { 0.03 } else { 0.12 };
                 r.pts[k] = p + vel + (v3(0.0, -g, 0.0) + wind * blow) * (h * h);
@@ -2639,6 +2663,27 @@ impl Env {
     }
 }
 
+/// The polyline `pts` as `n` + 1 points evenly along it.
+fn resample(pts: &[V3], n: usize) -> Vec<V3> {
+    let lens: Vec<f64> = pts.windows(2).map(|w| (w[1] - w[0]).len()).collect();
+    let total: f64 = lens.iter().sum();
+    if total < 1e-9 || pts.len() < 2 {
+        return vec![pts[0]; n + 1];
+    }
+    let mut out = Vec::with_capacity(n + 1);
+    let (mut seg, mut done) = (0usize, 0.0);
+    for k in 0..=n {
+        let at = total * k as f64 / n as f64;
+        while seg + 1 < lens.len() && done + lens[seg] < at {
+            done += lens[seg];
+            seg += 1;
+        }
+        let t = if lens[seg] > 1e-12 { ((at - done) / lens[seg]).clamp(0.0, 1.0) } else { 0.0 };
+        out.push(pts[seg] + (pts[seg + 1] - pts[seg]) * t);
+    }
+    out
+}
+
 /// Moves point `p` out of the blocks it is in, and takes away its speed into them (`prev` holds
 /// last step's place, so the speed is `p - prev`), with some friction along the surface.
 fn push_out(world: &dyn World, p: &mut V3, prev: &mut V3) {
@@ -2659,6 +2704,53 @@ fn in_blast(b: &Blast, pos: [i32; 3]) -> bool {
 }
 
 impl Physics {
+    /// The player (a column of 0.35 blocks round and 1.8 high standing at `feet`, moving at `vel`)
+    /// shoves the pieces and ragdolls it walks into: out of its way, carried along at its speed,
+    /// tumbling.
+    pub fn shove(&mut self, feet: V3, vel: V3) {
+        const RADIUS: f64 = 0.35;
+        const HEIGHT: f64 = 1.8;
+        let hv = v3(vel.x, 0.0, vel.z);
+        for o in &mut self.objects {
+            let mut hit = false;
+            for b in &mut self.bodies[o.first..o.first + o.count] {
+                let r = b.radius().min(0.6);
+                if b.x.y + r < feet.y - 0.05 || b.x.y - r > feet.y + HEIGHT {
+                    continue;
+                }
+                let d = v3(b.x.x - feet.x, 0.0, b.x.z - feet.z);
+                let l = d.len();
+                let reach = RADIUS + r * 0.8;
+                if l >= reach {
+                    continue;
+                }
+                let n = if l > 1e-6 {
+                    d * (1.0 / l)
+                } else if hv.len() > 1e-6 {
+                    hv.norm()
+                } else {
+                    v3(1.0, 0.0, 0.0)
+                };
+                b.x = b.x + n * (reach - l);
+                // Carried at least as fast as the player walks into it, and a little more.
+                let into = hv.dot(n).max(0.0);
+                let target = into * 1.15 + 0.5;
+                let vn = b.v.dot(n);
+                if vn < target {
+                    b.v = b.v + n * (target - vn);
+                }
+                b.v.y = b.v.y.max(0.35 * into.min(4.0));
+                // Kicked over: it rolls away from the feet.
+                b.w = b.w + n.cross(v3(0.0, 1.0, 0.0)) * (-(into * 2.5 + 0.5));
+                hit = true;
+            }
+            if hit {
+                o.sleeping = false;
+                o.still = 0.0;
+            }
+        }
+    }
+
     /// A block blown out of an explosion: a few pieces thrown away from its center.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_blown(&mut self, boxes: &[[f64; 6]], pos: [i32; 3], uv: [f32; 4], tint: u32, per: usize, blast: &Blast, life: f64) {
