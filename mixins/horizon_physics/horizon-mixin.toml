@@ -1,6 +1,6 @@
 [mod]
 id = "horizon_physics"
-version = "0.6.1"
+version = "0.6.2"
 priority = 100
 
 [compatibility]
@@ -223,15 +223,14 @@ visibility = "pub"
 id = "fluid"
 kind = "HEAD"
 cancellable = true
-target = "horizon_client_render::mesher::fluid::tesselate"
+target = "horizon_client_render::mesher::Mesher<'_>::mesh_reusing"
 helper = "fluid.rs"
 bindings = [
-  { name = "tables", ty = "&MeshTables", value = "tables" },
-  { name = "nether", ty = "bool", value = "nether" },
-  { name = "pad", ty = "&Padded", value = "pad" },
-  { name = "water_color", ty = "u32", value = "water_color" },
-  { name = "out", ty = "&mut SectionMesh", value = "&mut *out" },
-  { name = "cell", ty = "[i32; 3]", value = "[x, y, z]" },
+  { name = "mesher", ty = "&mut Mesher<'_>", value = "&mut *self" },
+  { name = "region", ty = "&[[Option<&Chunk>; 3]; 3]", value = "region" },
+  { name = "sy", ty = "i32", value = "sy" },
+  { name = "out", ty = "SectionMesh", value = "::core::mem::take(&mut out)" },
+  { name = "scratch", ty = "&mut MeshScratch", value = "&mut *scratch" },
 ]
 
 # A Horizon shader pack's terrain shader, with the waves and sway.

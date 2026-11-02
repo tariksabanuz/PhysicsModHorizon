@@ -12,15 +12,19 @@ pub mod mesher {
     #[derive(PartialEq)]
     pub enum FluidKind { Water, FlowingWater, Lava }
     impl FluidState { pub fn kind(&self) -> FluidKind { FluidKind::Water } }
-    pub struct MeshTables { info: Vec<Info> }
-    pub struct Padded { blocks: Vec<u32> }
+    pub struct MeshTables { pub info: Vec<Info> }
+    pub struct Padded { pub blocks: Vec<u32> }
+    #[derive(Default)]
     pub struct SectionMesh { pub translucent: Vec<TerrainVertex> }
+    pub struct Chunk;
+    pub struct MeshScratch { pub padded: Padded }
+    pub struct Mesher<'a> { pub tables: &'a MeshTables }
     fn pi(x: i32, y: i32, z: i32) -> usize { 0 }
-    pub mod fluid {
-        use super::{MeshTables, Padded, SectionMesh, FluidKind, pi};
-        pub(super) fn tesselate(tables: &MeshTables, nether: bool, pad: &Padded, water_color: u32, out: &mut SectionMesh, [x, y, z]: [i32; 3]) {
+    impl Mesher<'_> {
+        pub(crate) fn mesh_reusing(&mut self, region: &[[Option<&Chunk>; 3]; 3], sy: i32, mut out: SectionMesh, scratch: &mut MeshScratch) -> SectionMesh {
             //FLUID//
-            if let ::core::ops::ControlFlow::Break(()) = __h_fluid(tables, nether, pad, water_color, &mut *out, [x, y, z]) { return; }
+            if let ::core::ops::ControlFlow::Break(__r) = __h_fluid(&mut *self, region, sy, ::core::mem::take(&mut out), &mut *scratch) { return __r; }
+            out
         }
     }
     #[repr(C)]
