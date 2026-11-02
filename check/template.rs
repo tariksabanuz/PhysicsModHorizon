@@ -23,7 +23,7 @@ pub mod mesher {
     impl Mesher<'_> {
         pub(crate) fn mesh_reusing(&mut self, region: &[[Option<&Chunk>; 3]; 3], sy: i32, mut out: SectionMesh, scratch: &mut MeshScratch) -> SectionMesh {
             //FLUID//
-            if let ::core::ops::ControlFlow::Break(__r) = __h_fluid(&mut *self, region, sy, ::core::mem::take(&mut out), &mut *scratch) { return __r; }
+            if let ::core::ops::ControlFlow::Break(__r) = __h_fluid(&mut *self, region, sy, &mut out, &mut *scratch) { return __r; }
             out
         }
     }

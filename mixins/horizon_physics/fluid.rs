@@ -6,14 +6,14 @@ fn horizon_physics_fluid(
     mesher: &mut Mesher<'_>,
     region: &[[Option<&Chunk>; 3]; 3],
     sy: i32,
-    out: SectionMesh,
+    out: &mut SectionMesh,
     scratch: &mut MeshScratch,
 ) -> ::core::ops::ControlFlow<SectionMesh> {
     use crate::native_horizon_physics_sway as sway;
     if !sway::marks_water() || !sway::fluid_enter() {
         return ::core::ops::ControlFlow::Continue(());
     }
-    let mut done = mesher.mesh_reusing(region, sy, out, scratch);
+    let mut done = mesher.mesh_reusing(region, sy, ::core::mem::take(out), scratch);
     sway::fluid_leave();
     let info = &mesher.tables.info;
     let pad = &scratch.padded;
