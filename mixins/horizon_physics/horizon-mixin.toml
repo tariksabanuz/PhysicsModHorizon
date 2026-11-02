@@ -1,6 +1,6 @@
 [mod]
 id = "horizon_physics"
-version = "0.4.0"
+version = "0.4.1"
 priority = 100
 
 [compatibility]
@@ -178,6 +178,23 @@ bindings = [
   { name = "data", ty = "&MobData", value = "data" },
   { name = "out", ty = "&mut Vec<Vertex>", value = "&mut *out" },
 ]
+
+# Vanilla's campfire smoke and fire's large smoke give way to the mod's.
+[[injection]]
+id = "campfire-smoke"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::animate_tick::make_campfire_smoke"
+helper = "campfire_smoke.rs"
+bindings = [{ name = "pos", ty = "[i32; 3]", value = "pos" }]
+
+[[injection]]
+id = "fire-smoke"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::animate_tick::add"
+helper = "fire_smoke.rs"
+bindings = [{ name = "ty", ty = "T", value = "ty" }]
 
 # In the renderer: the waves and sway, beside the renderer's own code.
 [[module]]

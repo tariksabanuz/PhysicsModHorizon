@@ -19,7 +19,7 @@ use crate::mesher::Vertex;
 
 pub const ID: &str = "horizon_physics";
 pub const NAME: &str = "Horizon Physics";
-pub const VERSION: &str = "0.4.0";
+pub const VERSION: &str = "0.4.1";
 pub const DESCRIPTION: &str =
     "By tariksabanuz. Blocks crumble and blow apart, ragdolls, items, smoke, ropes, capes, liquids, waves and swaying plants.";
 
@@ -1810,6 +1810,9 @@ pub struct Shape {
     pub segments: usize,
 }
 
+/// `gfx::TRANSLUCENT_PARTICLE_OVERLAY`: quads of vanilla's translucent particle layer.
+const TRANSLUCENT_PARTICLE: u32 = 15;
+
 fn hash01(seed: u32, i: u32) -> f64 {
     let mut x = seed ^ i.wrapping_mul(0x9E37_79B9);
     x ^= x >> 16;
@@ -1874,7 +1877,9 @@ impl Shape {
             out.push(Vertex {
                 pos: [p.x as f32, p.y as f32, p.z as f32],
                 uv,
-                layer: 0,
+                // Horizon's translucent particle layer: drawn after water and glass, so the
+                // puffs never hide them.
+                layer: TRANSLUCENT_PARTICLE,
                 color,
                 light: self.light,
                 normal: [0; 4],
@@ -1989,7 +1994,7 @@ impl Puff {
         let fade_in = |s: f64| (self.age / s).clamp(0.0, 1.0);
         self.alpha
             * match self.kind {
-                FxKind::Smoke => fade_in(0.5) * (1.0 - t).powf(1.4),
+                FxKind::Smoke => fade_in(0.5) * (1.0 - t).powf(0.9),
                 FxKind::Flame => fade_in(0.05) * (1.0 - t).powf(0.8),
                 FxKind::Spark => ((1.0 - t) / 0.25).min(1.0),
                 FxKind::Ember => {
@@ -2340,10 +2345,10 @@ impl Env {
         let base = v3(f64::from(p[0]), f64::from(p[1]), f64::from(p[2]));
         // Smoke a second, its size, life, colours and opacity; embers a second and their colour.
         let (rate, size, life, from, to, alpha, embers, ember) = match kind {
-            1 => (5.0, 0.16, 4.5, [0.16, 0.15, 0.14], [0.48, 0.48, 0.49], 0.5, 2.5, [1.0, 0.62, 0.18]),
-            2 => (4.0, 0.15, 4.0, [0.18, 0.21, 0.23], [0.48, 0.52, 0.55], 0.45, 2.0, [0.45, 0.9, 1.0]),
-            3 => (13.0, 0.22, 9.0, [0.36, 0.36, 0.36], [0.74, 0.74, 0.75], 0.42, 1.2, [1.0, 0.62, 0.18]),
-            4 => (12.0, 0.22, 9.0, [0.33, 0.37, 0.4], [0.7, 0.74, 0.77], 0.42, 1.0, [0.45, 0.9, 1.0]),
+            1 => (6.0, 0.18, 5.0, [0.2, 0.19, 0.18], [0.55, 0.55, 0.56], 0.72, 2.5, [1.0, 0.62, 0.18]),
+            2 => (5.0, 0.17, 4.5, [0.22, 0.25, 0.27], [0.55, 0.58, 0.6], 0.68, 2.0, [0.45, 0.9, 1.0]),
+            3 => (14.0, 0.24, 10.0, [0.42, 0.42, 0.42], [0.8, 0.8, 0.81], 0.7, 1.2, [1.0, 0.62, 0.18]),
+            4 => (13.0, 0.24, 10.0, [0.4, 0.43, 0.46], [0.76, 0.79, 0.82], 0.68, 1.0, [0.45, 0.9, 1.0]),
             _ => (0.15, 0.14, 3.5, [0.25, 0.22, 0.2], [0.55, 0.55, 0.55], 0.4, 0.3, [1.0, 0.55, 0.1]),
         };
         let y = match kind {
@@ -2571,7 +2576,7 @@ impl Env {
     pub fn rope(&mut self, group: u8, a: V3, b: V3, slack: f64, dt: f64, g: f64, wind: V3, world: &dyn World) -> Vec<V3> {
         let frame = self.frame;
         let dist = (b - a).len();
-        let n = ((dist * 3.0).round() as usize).clamp(8, 28);
+        let n = ((dist * 4.0).round() as usize).clamp(10, 40);
         let best = self
             .ropes
             .iter()
@@ -2596,13 +2601,16 @@ impl Env {
         for _ in 0..steps {
             for k in 1..n {
                 let p = r.pts[k];
-                let vel = (p - r.prev[k]) * 0.985;
+                // Air drag damps the swing; a lead is heavy, so the wind barely moves it (a
+                // fishing line, light, a little more).
+                let vel = (p - r.prev[k]) * 0.96;
                 r.prev[k] = p;
-                r.pts[k] = p + vel + (v3(0.0, -g * 0.6, 0.0) + wind * 0.4) * (h * h);
+                let blow = if group == 0 { 0.03 } else { 0.12 };
+                r.pts[k] = p + vel + (v3(0.0, -g, 0.0) + wind * blow) * (h * h);
             }
             r.pts[0] = a;
             r.pts[n] = b;
-            for it in 0..8 {
+            for it in 0..12 {
                 for k in 0..n {
                     let (p, q) = (r.pts[k], r.pts[k + 1]);
                     let d = q - p;
@@ -2718,6 +2726,11 @@ pub fn explosions_on() -> bool {
     part_on(|s| s.explosions)
 }
 
+/// Whether vanilla's own smoke over fire and campfires gives way to the mod's.
+pub fn replaces_vanilla_smoke() -> bool {
+    smoke_on()
+}
+
 pub fn smoke_on() -> bool {
     part_on(|s| s.smoke)
 }
@@ -2826,7 +2839,7 @@ pub fn leads(drawn: &[Vertex], camera: [f64; 3], world: &dyn World, out: &mut Ve
         // Step 0's first corners and step 23's last ones (quad order a0 b0 b1 a1).
         let start = mid(&lead[0], &lead[1]) + cam;
         let end = mid(&lead[23 * 8 + 2], &lead[23 * 8 + 3]) + cam;
-        let pts = rope(0, [start.x, start.y, start.z], [end.x, end.y, end.z], 0.07, world);
+        let pts = rope(0, [start.x, start.y, start.z], [end.x, end.y, end.z], 0.12, world);
         let pts: Vec<V3> = pts.iter().map(|p| v3(p[0], p[1], p[2]) - cam).collect();
         let (c0, c1) = (lead[0].color, lead[8].color);
         let (light, uv) = (lead[0].light, lead[0].uv);
@@ -2968,7 +2981,7 @@ pub fn cape(id: u32, rest: &[Vertex], pivot: [f32; 3], out: &mut Vec<Vertex>) ->
                         // it so it never hangs dead.
                         let speed = vel * (1.0 / h.max(1e-6));
                         let ripple = ((self_hash(id) + r as f64 * 0.9 + c as f64 * 0.35) - s.env.clock * 7.0).sin();
-                        let air = wind * (1.0 + 0.3 * ripple) + v3(0.0, ripple * 0.15, 0.0);
+                        let air = wind * (0.45 + 0.15 * ripple) + v3(0.0, ripple * 0.08, 0.0);
                         let force = v3(0.0, -g * 0.5, 0.0) + (air - speed) * 2.2;
                         cl.pts[k] = p + vel + force * (h * h);
                     }

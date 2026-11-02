@@ -137,6 +137,18 @@ pub mod mobs {
     }
 }
 
+pub mod animate_tick {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum T { LargeSmoke, Flame }
+    pub fn make_campfire_smoke(pos: [i32; 3]) {
+        //CAMPFIRE_SMOKE//
+        if let ::core::ops::ControlFlow::Break(()) = __h_campfire_smoke(pos) { return; }
+    }
+    fn add(ty: T) {
+        //FIRE_SMOKE//
+        if let ::core::ops::ControlFlow::Break(()) = __h_fire_smoke(ty) { return; }
+    }
+}
 pub mod gizmos {
     pub struct Line { pub start: [f64; 3], pub end: [f64; 3], pub color: u32, pub width: f32 }
 }

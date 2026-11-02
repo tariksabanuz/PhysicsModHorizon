@@ -774,7 +774,7 @@ fn a_turning_cape_keeps_hanging() {
     }
 }
 
-// --- 0.4.0 ----------------------------------------------------------------------------------
+// --- 0.4.1 ----------------------------------------------------------------------------------
 
 #[test]
 fn poured_water_spreads_settles_and_goes() {
@@ -885,7 +885,9 @@ fn smoke_gathers_under_a_roof_and_spreads_along_it() {
     }
     let smoke: Vec<&Puff> = env.puffs.iter().filter(|p| p.kind == FxKind::Smoke).collect();
     assert!(smoke.len() > 30, "too little smoke: {}", smoke.len());
-    assert!(smoke.iter().all(|p| p.x.y < 68.0), "smoke went through the roof");
+    // Above the roof only where it got out past an edge.
+    let through = smoke.iter().filter(|p| p.x.y > 68.0 && (-2.5..3.5).contains(&p.x.x) && (-2.5..3.5).contains(&p.x.z)).count();
+    assert!(through == 0, "smoke went through the roof: {through}");
     // Under the roof, spread out wide, not one thin column.
     let high: Vec<&&Puff> = smoke.iter().filter(|p| p.x.y > 66.5).collect();
     assert!(high.len() > 10, "nothing gathered under the roof");
@@ -965,4 +967,24 @@ fn dump_v3() {
     let mut out = Vec::new();
     env.emit(v3(0.5, 66.3, -2.5), [0.0, 0.0, 1.0, 1.0], &w, &mut out);
     dump("splash", &out);
+}
+
+#[test]
+fn a_lead_hangs_still_in_the_wind() {
+    let w = Flat { pillar: None, water_above: false };
+    let mut env = Env::default();
+    let (a, b) = (v3(0.0, 67.0, 0.0), v3(4.0, 67.0, 0.0));
+    let strong = wind_at(0.0, 2.4);
+    let mut side: Vec<f64> = Vec::new();
+    for f in 0..600 {
+        env.step(1.0 / 60.0, a, f, &Settings::default(), &w);
+        let pts = env.rope(0, a, b, 0.12, 1.0 / 60.0, 20.0, strong, &w);
+        if f > 300 {
+            side.push(pts[pts.len() / 2].z);
+        }
+    }
+    let max = side.iter().fold(0.0f64, |m, z| m.max(z.abs()));
+    let swing = side.iter().fold(f64::MIN, |m, z| m.max(*z)) - side.iter().fold(f64::MAX, |m, z| m.min(*z));
+    assert!(max < 0.2, "the wind blows the lead aside: {max}");
+    assert!(swing < 0.02, "it keeps swinging: {swing}");
 }

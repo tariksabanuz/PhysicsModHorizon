@@ -217,8 +217,8 @@ fn horizon_physics_wind(world: vec3<f32>, t: f32) -> f32 {
     let dir = horizon_physics_wind_dir(t);
     // Along the wind, a gust is a band that sweeps over the grass.
     let along = dot(world.xz, dir);
-    let gust = 0.55 + 0.3 * sin(along * 0.11 - t * 1.6) + 0.15 * sin(along * 0.37 - t * 3.1 + world.y * 0.2);
-    let strength = (0.35 + HORIZON_PHYSICS_WIND) * (1.0 + frame.rain * 0.8 + frame.thunder * 0.8);
+    let gust = 0.55 + 0.3 * sin(along * 0.11 - t * 0.9) + 0.15 * sin(along * 0.37 - t * 1.7 + world.y * 0.2);
+    let strength = (0.25 + 0.45 * HORIZON_PHYSICS_WIND) * (1.0 + frame.rain * 0.6 + frame.thunder * 0.8);
     return max(gust, 0.05) * strength;
 }
 // A flutter in two directions at a world point (each plant its own phase).
@@ -231,8 +231,8 @@ fn horizon_physics_flutter(p: vec3<f32>, t: f32, rate: f32) -> vec2<f32> {
 fn horizon_physics_lean(root: vec3<f32>, t: f32, h: f32, stiff: f32) -> vec3<f32> {
     let dir = horizon_physics_wind_dir(t);
     let w = horizon_physics_wind(root, t);
-    let f = horizon_physics_flutter(root, t, 2.4 + w);
-    let lean = (dir * (0.5 + 0.5 * w) * w + f * (0.25 + 0.35 * w)) * stiff;
+    let f = horizon_physics_flutter(root, t, 1.1 + 0.6 * w);
+    let lean = (dir * (0.5 + 0.5 * w) * w + f * (0.12 + 0.2 * w)) * stiff;
     // A bent stalk: the top moves most, and comes down a little as it bends.
     let x = lean * h * h;
     return vec3(x.x, -dot(x, x) * 0.35, x.y);
@@ -254,9 +254,9 @@ fn horizon_physics_sway(pos: vec3<f32>, uv: vec2<f32>, layer: u32) -> vec3<f32> 
         case 1u: {
             // Leaves: every corner rustles on its own, more in the wind.
             let w = horizon_physics_wind(world, t);
-            let f = horizon_physics_flutter(world * 1.7, t, 3.1 + w * 2.0);
+            let f = horizon_physics_flutter(world * 1.7, t, 1.4 + w * 0.8);
             let dir = horizon_physics_wind_dir(t);
-            off = vec3(f.x * 0.03 + dir.x * 0.025 * w, f.y * 0.018, f.y * 0.03 + dir.y * 0.025 * w) * (0.5 + w);
+            off = vec3(f.x * 0.016 + dir.x * 0.02 * w, f.y * 0.01, f.y * 0.016 + dir.y * 0.02 * w) * (0.5 + w);
         }
         case 2u: { off = horizon_physics_lean(root, t, h, 0.16); }
         case 3u: {
@@ -269,7 +269,7 @@ fn horizon_physics_sway(pos: vec3<f32>, uv: vec2<f32>, layer: u32) -> vec3<f32> 
             let dir = horizon_physics_wind_dir(t);
             let w = horizon_physics_wind(world, t);
             let ph = dot(floor(world.xz), vec2(0.71, 0.53)) - world.y * 0.45;
-            let swing = vec2(sin(t * 1.05 + ph), cos(t * 0.83 + ph * 1.3)) * 0.055;
+            let swing = vec2(sin(t * 0.7 + ph), cos(t * 0.55 + ph * 1.3)) * 0.045;
             let x = swing * (0.6 + 0.6 * w) + dir * 0.05 * w;
             off = vec3(x.x, 0.0, x.y);
         }
