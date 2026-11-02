@@ -13,7 +13,8 @@
     "crates/horizon-client/src/game/fishing.rs": "55c66857078564d1bac7bb37b6f46d6825daad87e1e5226a64e9073fb92c1c81",
     "crates/horizon-client-render/src/lib.rs": "6953bb1572ba8986ef05544ec8b1c47743df4e087afc08989a51efff4846ff66",
     "crates/horizon-client-render/src/gfx/native_material.rs": "6769e49d40b4aa96d9571d9d4a9c31c5c25764310fe49cc600a92e9450dcbab5",
-    "crates/horizon-client/src/game/native_shaders.rs": "eac4fdd28afb504c97536ef9315b564d93f28273c5b72c60d6bd67cbcbd51bdc"
+    "crates/horizon-client/src/game/native_shaders.rs": "eac4fdd28afb504c97536ef9315b564d93f28273c5b72c60d6bd67cbcbd51bdc",
+    "crates/horizon-client/src/game/shader_packs.rs": "4e8b0ccaea80294340046b06e354ceed3d9c56f0972c78dc7e9e418c2119004c"
   },
   "horizon_repository": "https://github.com/horizon-rust/horizon",
   "horizon_mixins_repository": "https://github.com/horizon-rust/horizon-mixins",

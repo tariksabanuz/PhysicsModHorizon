@@ -489,8 +489,8 @@ fn capes_hang_as_cloth_and_leads_become_ropes() {
         std::thread::sleep(std::time::Duration::from_millis(16));
     }
     assert_eq!(frames, 100);
-    // 4 by 7 cells, both sides.
-    assert_eq!(out.len(), 4 * 7 * 2 * 4);
+    // 5 by 10 cells, both sides.
+    assert_eq!(out.len(), 5 * 10 * 2 * 4);
     let ys: Vec<f32> = out.iter().map(|v| v.pos[1]).collect();
     let low = ys.iter().cloned().fold(f32::MAX, f32::min);
     assert!(low < 64.62 && low > 64.3, "the cape does not hang: {low}");
@@ -774,7 +774,7 @@ fn a_turning_cape_keeps_hanging() {
     }
 }
 
-// --- 0.3.3 ----------------------------------------------------------------------------------
+// --- 0.4.0 ----------------------------------------------------------------------------------
 
 #[test]
 fn poured_water_spreads_settles_and_goes() {
@@ -847,12 +847,122 @@ fn sway_table_and_shader() {
     assert!(w.contains("case 3u: { return 5u; }"));
     assert!(!w.contains("7u: { return 1u"), "plants are off");
     let entries = "fn horizon_material_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32) {\n    let pos = position + origin;\n}";
-    let p = sway::patch(entries).unwrap();
+    let p = sway::patch(entries, "").unwrap();
     assert!(p.contains("horizon_physics_sway(position + origin, uv, layer)"));
-    assert!(sway::patch("no anchor here").is_none());
+    assert!(sway::patch("no anchor here", "").is_none());
     sway::set(1, || names.clone(), false, false, 1.0);
-    assert!(sway::patch(entries).is_none(), "all off: the game's own shader");
+    assert!(sway::patch(entries, "").is_none(), "all off: the game's own shader");
     // For the WGSL check outside the tests.
     sway::set(1, || names.clone(), true, true, 2.4);
     std::fs::write("/tmp/hp_sway.wgsl", sway::wgsl(&sway::current().unwrap()).unwrap()).unwrap();
+}
+
+/// A floor at y = 64 with a roof (y = 68, x and z in -3..=3) on it: a shelter over fires.
+struct Roofed;
+
+impl World for Roofed {
+    fn cell(&self, x: i32, y: i32, z: i32) -> Cell {
+        if y < 64 || (y == 68 && (-3..=3).contains(&x) && (-3..=3).contains(&z)) {
+            return Cell::Full;
+        }
+        Cell::Air
+    }
+    fn light(&self, _: i32, _: i32, _: i32) -> u32 {
+        15 * 16
+    }
+}
+
+#[test]
+fn smoke_gathers_under_a_roof_and_spreads_along_it() {
+    let w = Roofed;
+    let mut env = Env::default();
+    let st = Settings { wind: 0, ..Settings::default() };
+    env.emitters.insert([0, 64, 0], 3);
+    let mut embers = 0;
+    for f in 0..(60 * 12) {
+        env.step(1.0 / 60.0, v3(0.5, 66.0, -6.0), f, &st, &w);
+        embers += env.puffs.iter().filter(|p| p.kind == FxKind::Ember).count();
+    }
+    let smoke: Vec<&Puff> = env.puffs.iter().filter(|p| p.kind == FxKind::Smoke).collect();
+    assert!(smoke.len() > 30, "too little smoke: {}", smoke.len());
+    assert!(smoke.iter().all(|p| p.x.y < 68.0), "smoke went through the roof");
+    // Under the roof, spread out wide, not one thin column.
+    let high: Vec<&&Puff> = smoke.iter().filter(|p| p.x.y > 66.5).collect();
+    assert!(high.len() > 10, "nothing gathered under the roof");
+    let wide = high.iter().map(|p| v3(p.x.x - 0.5, 0.0, p.x.z - 0.5).len()).fold(0.0, f64::max);
+    assert!(wide > 1.5, "it does not spread along the roof: {wide}");
+    // Embers fly, glowing, and vanish.
+    assert!(embers > 0, "no embers");
+}
+
+#[test]
+fn puffs_are_soft_round_and_sorted() {
+    let w = Flat { pillar: None, water_above: false };
+    let mut env = Env::default();
+    env.explode(v3(0.5, 65.0, 0.5), 3.0);
+    for f in 0..30 {
+        env.step(1.0 / 60.0, v3(0.5, 66.0, -6.0), f, &Settings::default(), &w);
+    }
+    let mut out = Vec::new();
+    env.emit(v3(0.5, 66.0, -6.0), [0.0, 0.0, 1.0, 1.0], &w, &mut out);
+    assert!(!out.is_empty() && out.len() % 4 == 0);
+    // Every puff has an opaque middle and a clear rim: no hard-edged cubes any more.
+    let alphas: Vec<u32> = out.iter().map(|v| v.color >> 24).collect();
+    assert!(alphas.iter().any(|&a| a == 0), "no clear rims");
+    assert!(alphas.iter().any(|&a| a > 100), "nothing opaque");
+    // Back to front: each puff's middle (its first vertex) is no closer than the next one's.
+    let per = 80;
+    let mids: Vec<f32> = out.chunks(per).map(|c| c[0].pos.iter().map(|x| x * x).sum::<f32>()).collect();
+    let sorted = mids.windows(2).filter(|w| w[0] + 1e-3 >= w[1]).count();
+    assert!(sorted * 10 >= (mids.len() - 1) * 9, "not drawn far to near");
+}
+
+#[test]
+#[ignore]
+fn dump_v3() {
+    // Smoke from a campfire under a roof, and an explosion, as vertex soups for render_v3.py.
+    let dump = |name: &str, out: &[Vertex]| {
+        let mut s = String::from("[");
+        for (i, v) in out.iter().enumerate() {
+            if i > 0 {
+                s.push(',');
+            }
+            s.push_str(&format!("[{},{},{},{}]", v.pos[0], v.pos[1], v.pos[2], v.color));
+        }
+        s.push(']');
+        std::fs::write(format!("/tmp/hp3_{name}.json"), s).unwrap();
+    };
+    let cam = v3(0.5, 65.7, -7.0);
+    let w = Roofed;
+    let mut env = Env::default();
+    let st = Settings { wind: 0, ..Settings::default() };
+    env.emitters.insert([0, 64, 0], 3);
+    env.emitters.insert([2, 64, 1], 1);
+    for f in 0..(60 * 14) {
+        env.step(1.0 / 60.0, cam, f, &st, &w);
+    }
+    let mut out = Vec::new();
+    env.emit(cam, [0.0, 0.0, 1.0, 1.0], &w, &mut out);
+    dump("roof", &out);
+    let w = Flat { pillar: None, water_above: false };
+    let cam = v3(0.5, 66.0, -9.0);
+    for (name, t) in [("blast_a", 0.15), ("blast_b", 0.6), ("blast_c", 2.5)] {
+        let mut env = Env::default();
+        env.explode(v3(0.5, 64.6, 0.5), 4.0);
+        let steps = (t * 60.0) as u64;
+        for f in 0..steps {
+            env.step(1.0 / 60.0, cam, f, &Settings { wind: 0, ..Settings::default() }, &w);
+        }
+        let mut out = Vec::new();
+        env.emit(cam, [0.0, 0.0, 1.0, 1.0], &w, &mut out);
+        dump(name, &out);
+    }
+    let mut env = Env::default();
+    env.splash(v3(0.5, 64.9, 0.5), 9.0);
+    for f in 0..20 {
+        env.step(1.0 / 60.0, cam, f, &Settings::default(), &Flat { pillar: None, water_above: false });
+    }
+    let mut out = Vec::new();
+    env.emit(v3(0.5, 66.3, -2.5), [0.0, 0.0, 1.0, 1.0], &w, &mut out);
+    dump("splash", &out);
 }

@@ -203,6 +203,10 @@ pub mod game {
     impl ItemRenderer { pub fn item_id(&self, item: &str) -> i32 { 0 } }
     pub struct RenderAssets { pub sprite_layers: std::collections::BTreeMap<String, u32> }
     pub struct PackResources { pub item_renderer: ItemRenderer, assets: std::sync::Arc<Assets>, render: std::sync::Arc<RenderAssets> }
+    pub struct HorizonSettings { pub shader_pack: String }
+    pub struct GameSettings { pub horizon: HorizonSettings }
+    pub struct Renderer;
+    impl Renderer { pub fn drop_shader_packs(&mut self) {} }
     pub struct Game<'a> {
         res: std::sync::Arc<Resources>,
         gui: UiResources,
@@ -213,6 +217,8 @@ pub mod game {
         pack: PackResources,
         player: Option<PlayerMotion>,
         native_shaders: native_shaders::NativeShaders,
+        settings: GameSettings,
+        renderer: Option<Renderer>,
         _l: std::marker::PhantomData<&'a ()>,
     }
     impl Game<'_> {
@@ -295,10 +301,22 @@ pub mod game {
         use super::Game;
         #[derive(Default)]
         pub(super) struct NativeShaders { pub picked: String, stamp: Option<u64>, looked: Option<std::time::Instant> }
+        impl NativeShaders { pub fn picking(name: &str) -> Self { Self { picked: name.to_owned(), ..Self::default() } } }
         impl Game<'_> {
             pub(super) fn tick_native_shader_pack(&mut self, path: &std::path::Path) {
                 //SHADER_PACK//
                 __h_shader_pack(&mut *self);
+            }
+        }
+    }
+    pub mod shader_packs {
+        use super::Game;
+        pub struct PackInputs;
+        impl Game<'_> {
+            pub(super) fn shader_pack_inputs(&mut self, camera: glam::DVec3, partial: f32) -> PackInputs {
+                //BUILTIN//
+                __h_builtin(&mut *self);
+                PackInputs
             }
         }
     }

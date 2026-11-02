@@ -1,6 +1,6 @@
 [mod]
 id = "horizon_physics"
-version = "0.3.3"
+version = "0.4.0"
 priority = 100
 
 [compatibility]
@@ -195,6 +195,14 @@ cancellable = true
 target = "horizon_client_render::gfx::native_material::shader_source"
 helper = "shader.rs"
 bindings = [{ name = "source", ty = "&str", value = "source" }]
+
+# No shader pack picked: the mod's own vanilla-look pack runs, so the waves and sway can.
+[[injection]]
+id = "builtin"
+kind = "HEAD"
+target = "horizon_client::game::shader_packs::Game<'_>::shader_pack_inputs"
+helper = "builtin.rs"
+bindings = [{ name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" }]
 
 # Before the game checks its Horizon shader pack: hand the renderer the sprite layers and settings,
 # and build the pack again when they changed.

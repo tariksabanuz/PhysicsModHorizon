@@ -19,7 +19,7 @@ use crate::mesher::Vertex;
 
 pub const ID: &str = "horizon_physics";
 pub const NAME: &str = "Horizon Physics";
-pub const VERSION: &str = "0.3.3";
+pub const VERSION: &str = "0.4.0";
 pub const DESCRIPTION: &str =
     "By tariksabanuz. Blocks crumble and blow apart, ragdolls, items, smoke, ropes, capes, liquids, waves and swaying plants.";
 
@@ -221,6 +221,22 @@ pub fn load(dir: Option<PathBuf>) {
         .map(|t| Settings::from_text(&t))
         .unwrap_or_default();
     *g = Some((s, path));
+}
+
+static BUILTIN: AtomicBool = AtomicBool::new(false);
+
+/// Whether the game runs the mod's own vanilla-look pack (no pack picked, waves or sway on).
+pub fn builtin_running() -> bool {
+    BUILTIN.load(Ordering::Relaxed)
+}
+
+pub fn set_builtin_running(on: bool) {
+    BUILTIN.store(on, Ordering::Relaxed);
+}
+
+/// Where the mod's own pack is written: beside its settings.
+pub fn builtin_pack_dir(config: Option<PathBuf>) -> Option<PathBuf> {
+    config.map(|d| d.join("horizon_physics_pack"))
 }
 
 pub fn loaded() -> bool {
@@ -1745,11 +1761,6 @@ pub fn item_rotation(id: u32, grounded: bool, velocity: [f64; 3], flat: bool) ->
 const GLOW: u32 = 240 | 240 << 8;
 
 /// An entity vertex colour (ABGR bytes) from 0..1 RGB.
-fn abgr(c: [f64; 3]) -> u32 {
-    let b = |x: f64| (x.clamp(0.0, 1.0) * 255.0).round() as u32;
-    0xFF00_0000 | b(c[2]) << 16 | b(c[1]) << 8 | b(c[0])
-}
-
 pub fn mix3(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
     let t = t.clamp(0.0, 1.0);
     [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]
@@ -1777,64 +1788,130 @@ fn solid(world: &dyn World, p: V3) -> bool {
     }
 }
 
-/// A cube of `half` around `at` (camera-relative), turned by `q`, in one colour.
-#[allow(clippy::too_many_arguments)]
-fn cube(at: V3, half: f64, q: Quat, white: [f32; 4], color: u32, light: u32, shaded: bool, out: &mut Vec<Vertex>) {
-    let uv = [(white[0] + white[2]) * 0.5, (white[1] + white[3]) * 0.5];
-    const F: [([f64; 3], [[f64; 3]; 4]); 6] = [
-        ([1.0, 0.0, 0.0], [[1.0, -1.0, -1.0], [1.0, 1.0, -1.0], [1.0, 1.0, 1.0], [1.0, -1.0, 1.0]]),
-        ([-1.0, 0.0, 0.0], [[-1.0, -1.0, 1.0], [-1.0, 1.0, 1.0], [-1.0, 1.0, -1.0], [-1.0, -1.0, -1.0]]),
-        ([0.0, 1.0, 0.0], [[-1.0, 1.0, -1.0], [-1.0, 1.0, 1.0], [1.0, 1.0, 1.0], [1.0, 1.0, -1.0]]),
-        ([0.0, -1.0, 0.0], [[-1.0, -1.0, 1.0], [-1.0, -1.0, -1.0], [1.0, -1.0, -1.0], [1.0, -1.0, 1.0]]),
-        ([0.0, 0.0, 1.0], [[-1.0, -1.0, 1.0], [1.0, -1.0, 1.0], [1.0, 1.0, 1.0], [-1.0, 1.0, 1.0]]),
-        ([0.0, 0.0, -1.0], [[1.0, -1.0, -1.0], [-1.0, -1.0, -1.0], [-1.0, 1.0, -1.0], [1.0, 1.0, -1.0]]),
-    ];
-    let pack = |x: f64| (x.clamp(-1.0, 1.0) * 127.0) as i8;
-    for (n, corners) in F {
-        let nw = q.rotate(v3(n[0], n[1], n[2]));
-        let normal = if shaded { [pack(nw.x), pack(nw.y), pack(nw.z), -127] } else { [0; 4] };
-        for c in corners {
-            let p = at + q.rotate(v3(c[0], c[1], c[2]) * half);
-            out.push(Vertex {
-                pos: [p.x as f32, p.y as f32, p.z as f32],
-                uv,
-                layer: 0,
-                color,
-                light,
-                normal,
-                glint_uv: [0.0, 0.0],
-            });
-        }
-    }
+/// A soft, round puff in the picture: opaque in the middle, clear at its uneven rim, facing the
+/// camera (or lying flat), maybe drawn out along a direction.
+pub struct Shape {
+    /// Camera-relative centre.
+    pub at: V3,
+    pub radius: f64,
+    pub roll: f64,
+    pub seed: u32,
+    pub rgb: [f64; 3],
+    /// The middle's colour, when it differs from the rim's.
+    pub center_rgb: Option<[f64; 3]>,
+    pub alpha: f64,
+    /// How much of the opacity the middle keeps against the ring halfway out (1: as much).
+    pub core: f64,
+    pub light: u32,
+    /// Lies flat (a print, froth), instead of facing the camera.
+    pub flat: bool,
+    /// Drawn out along a direction, by a factor.
+    pub stretch: Option<(V3, f64)>,
+    pub segments: usize,
 }
 
-/// A flat quad (both sides) at four camera-relative corners.
-fn quad(c: [V3; 4], white: [f32; 4], color: u32, light: u32, out: &mut Vec<Vertex>) {
-    let uv = [(white[0] + white[2]) * 0.5, (white[1] + white[3]) * 0.5];
-    for order in [[0, 1, 2, 3], [3, 2, 1, 0]] {
-        for i in order {
-            let p = c[i];
+fn hash01(seed: u32, i: u32) -> f64 {
+    let mut x = seed ^ i.wrapping_mul(0x9E37_79B9);
+    x ^= x >> 16;
+    x = x.wrapping_mul(0x7FEB_352D);
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x846C_A68B);
+    x ^= x >> 16;
+    f64::from(x) / f64::from(u32::MAX)
+}
+
+fn rgba(c: [f64; 3], a: f64) -> u32 {
+    let b = |x: f64| (x.clamp(0.0, 1.0) * 255.0).round() as u32;
+    b(a) << 24 | b(c[2]) << 16 | b(c[1]) << 8 | b(c[0])
+}
+
+impl Shape {
+    pub fn new(at: V3, radius: f64, roll: f64, seed: u32, rgb: [f64; 3], alpha: f64, light: u32) -> Shape {
+        Shape { at, radius, roll, seed, rgb, center_rgb: None, alpha, core: 1.0, light, flat: false, stretch: None, segments: 10 }
+    }
+
+    /// The puff as a fan of quads: the middle, a ring halfway out, the rim (clear).
+    pub fn draw(&self, white: [f32; 4], out: &mut Vec<Vertex>) {
+        let uv = [(white[0] + white[2]) * 0.5, (white[1] + white[3]) * 0.5];
+        let n = if self.flat {
+            v3(0.0, 1.0, 0.0)
+        } else {
+            let l = self.at.len();
+            if l < 1e-6 {
+                return;
+            }
+            self.at * (-1.0 / l)
+        };
+        let helper = if n.y.abs() > 0.95 { v3(1.0, 0.0, 0.0) } else { v3(0.0, 1.0, 0.0) };
+        let mut u = n.cross(helper).norm();
+        let mut w = n.cross(u).norm();
+        let (sr, cr) = self.roll.sin_cos();
+        (u, w) = (u * cr + w * sr, w * cr - u * sr);
+        let mut su = 1.0;
+        if let Some((dir, k)) = self.stretch {
+            let d = dir - n * dir.dot(n);
+            if d.len() > 1e-6 {
+                u = d.norm();
+                w = n.cross(u).norm();
+                su = k;
+            }
+        }
+        let mid_rgb = self.rgb;
+        let center_rgb = self.center_rgb.unwrap_or(self.rgb);
+        let center = rgba(center_rgb, self.alpha * self.core);
+        let mid = rgba(mix3(center_rgb, mid_rgb, 0.6), self.alpha * 0.82);
+        let rim = rgba(mid_rgb, 0.0);
+        let segs = self.segments.max(4);
+        let ring: Vec<(V3, V3)> = (0..segs)
+            .map(|i| {
+                let a = std::f64::consts::TAU * i as f64 / segs as f64;
+                let r = self.radius * (0.8 + 0.2 * hash01(self.seed, i as u32));
+                let dir = u * (a.cos() * su) + w * a.sin();
+                (self.at + dir * (r * 0.55), self.at + dir * r)
+            })
+            .collect();
+        let mut put = |p: V3, color: u32| {
             out.push(Vertex {
                 pos: [p.x as f32, p.y as f32, p.z as f32],
                 uv,
                 layer: 0,
                 color,
-                light,
-                normal: [0, 127, 0, -127],
+                light: self.light,
+                normal: [0; 4],
                 glint_uv: [0.0, 0.0],
             });
+        };
+        for i in 0..segs {
+            let (m0, r0) = ring[i];
+            let (m1, r1) = ring[(i + 1) % segs];
+            // The middle: a triangle (its last corner twice).
+            put(self.at, center);
+            put(m0, mid);
+            put(m1, mid);
+            put(m1, mid);
+            // The ring out to the rim.
+            put(m0, mid);
+            put(r0, rim);
+            put(r1, rim);
+            put(m1, mid);
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FxKind {
-    /// Rises, drifts with the wind, grows and thins out.
+    /// Rises on its warmth, swirls, drifts with the wind, spreads under ceilings and thins out.
     Smoke,
-    /// Falls and bounces, glowing.
+    /// Falls and bounces, glowing, drawn as a streak along its flight.
     Spark,
     /// A glowing ball of fire that swells and dies away quickly.
     Flame,
+    /// A glowing speck from a fire, carried up by the hot air.
+    Ember,
+    /// A powder of snow kicked up, falling back slowly.
+    Dust,
+    /// White froth lying on the water where a splash came down.
+    Foam,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1847,19 +1924,48 @@ pub struct Puff {
     pub from: [f64; 3],
     pub to: [f64; 3],
     pub kind: FxKind,
-    q: Quat,
-    w: V3,
+    /// Its turn in the picture, and how fast that turns.
+    roll: f64,
+    spin: f64,
+    seed: u32,
+    /// How opaque it starts.
+    pub alpha: f64,
+    /// Seconds it has spent under a ceiling (smoke there lingers).
+    held: f64,
+    /// Seconds before it shows (a fireball's smoke comes after the fire).
+    delay: f64,
 }
 
-const MAX_PUFFS: usize = 1600;
+const MAX_PUFFS: usize = 1400;
 
 impl Puff {
     fn new(kind: FxKind, x: V3, v: V3, size: f64, life: f64, from: [f64; 3], to: [f64; 3], rng: &mut Rng) -> Puff {
-        let q = Quat::axis_angle(rng.unit(), rng.range(0.0, std::f64::consts::TAU));
-        Puff { x, v, size, age: 0.0, life, from, to, kind, q, w: rng.unit() * rng.range(0.3, 1.5) }
+        let alpha = match kind {
+            FxKind::Smoke => 0.55,
+            FxKind::Flame => 0.9,
+            FxKind::Spark | FxKind::Ember => 1.0,
+            FxKind::Dust => 0.6,
+            FxKind::Foam => 0.6,
+        };
+        Puff {
+            x,
+            v,
+            size,
+            age: 0.0,
+            life,
+            from,
+            to,
+            kind,
+            roll: rng.range(0.0, std::f64::consts::TAU),
+            spin: rng.range(-0.5, 0.5),
+            seed: (rng.next() * 4_294_967_295.0) as u32,
+            alpha,
+            held: 0.0,
+            delay: 0.0,
+        }
     }
 
-    /// How big the puff is now (0..1 of its size).
+    /// How big the puff is now, against its starting size.
     pub fn scale_pub(&self) -> f64 {
         self.scale()
     }
@@ -1867,10 +1973,32 @@ impl Puff {
     fn scale(&self) -> f64 {
         let t = (self.age / self.life).clamp(0.0, 1.0);
         match self.kind {
-            FxKind::Smoke => (0.35 + 0.65 * (t * 4.0).min(1.0)) * (1.0 + 0.8 * t) * ((1.0 - t) / 0.35).min(1.0),
-            FxKind::Spark => 1.0 - t * t,
-            FxKind::Flame => (0.5 + 1.5 * (t * 3.0).min(1.0)) * ((1.0 - t) / 0.5).min(1.0),
+            // Smoke keeps growing as it mixes with the air.
+            FxKind::Smoke => 0.55 + 2.4 * (1.0 - (-self.age * 0.45).exp()),
+            FxKind::Spark => 1.0 - 0.5 * t * t,
+            FxKind::Flame => (0.55 + 0.9 * (t * 4.0).min(1.0)) * ((1.0 - t) / 0.4).min(1.0).max(0.3),
+            FxKind::Ember => 1.0 - 0.6 * t,
+            FxKind::Dust => 0.7 + 1.6 * t,
+            FxKind::Foam => 0.5 + 1.2 * t.sqrt(),
         }
+    }
+
+    /// How opaque it is now (0 gone).
+    fn opacity(&self) -> f64 {
+        let t = (self.age / self.life).clamp(0.0, 1.0);
+        let fade_in = |s: f64| (self.age / s).clamp(0.0, 1.0);
+        self.alpha
+            * match self.kind {
+                FxKind::Smoke => fade_in(0.5) * (1.0 - t).powf(1.4),
+                FxKind::Flame => fade_in(0.05) * (1.0 - t).powf(0.8),
+                FxKind::Spark => ((1.0 - t) / 0.25).min(1.0),
+                FxKind::Ember => {
+                    let flicker = 0.7 + 0.3 * (self.age * 23.0 + f64::from(self.seed % 100)).sin();
+                    flicker * ((1.0 - t) / 0.3).min(1.0)
+                }
+                FxKind::Dust => fade_in(0.08) * (1.0 - t).powf(1.2),
+                FxKind::Foam => fade_in(0.1) * (1.0 - t),
+            }
     }
 }
 
@@ -1917,8 +2045,8 @@ pub struct Cloth {
 }
 
 /// The cloth grid of a cape: points across and down.
-const CAPE_W: usize = 5;
-const CAPE_H: usize = 8;
+const CAPE_W: usize = 6;
+const CAPE_H: usize = 11;
 
 /// Everything that is not a rigid piece.
 pub struct Env {
@@ -2002,27 +2130,33 @@ impl Env {
         let r = radius.clamp(0.5, 12.0);
         let rng = &mut self.rng;
         let mut new = Vec::new();
-        let flames = (6.0 + r * 3.0) as usize;
+        // The fireball: white hot in the middle, orange, then dark red as it burns out.
+        let flames = (10.0 + r * 4.0) as usize;
         for _ in 0..flames {
             let d = rng.unit();
-            let x = center + d * rng.range(0.0, r * 0.45);
-            let v = d * rng.range(1.0, 3.0 + r) + v3(0.0, rng.range(0.5, 2.0), 0.0);
-            let warm = [1.0, rng.range(0.75, 0.95), rng.range(0.35, 0.55)];
-            new.push(Puff::new(FxKind::Flame, x, v, rng.range(0.25, 0.45) * (0.6 + r * 0.15), rng.range(0.35, 0.7), warm, [0.55, 0.12, 0.02], rng));
+            let x = center + d * rng.range(0.0, r * 0.4);
+            let v = d * rng.range(1.0, 2.5 + r * 0.5) + v3(0.0, rng.range(0.5, 2.0), 0.0);
+            let hot = [1.0, rng.range(0.72, 0.85), rng.range(0.28, 0.42)];
+            let size = rng.range(0.35, 0.6) * (0.7 + r * 0.18);
+            new.push(Puff::new(FxKind::Flame, x, v, size, rng.range(0.45, 0.85), hot, [0.62, 0.1, 0.02], rng));
         }
         let sparks = (16.0 + r * 10.0) as usize;
         for _ in 0..sparks {
             let d = rng.unit();
             let v = d * rng.range(5.0, 9.0 + r * 2.0) + v3(0.0, rng.range(2.0, 6.0), 0.0);
-            new.push(Puff::new(FxKind::Spark, center + d * 0.3, v, rng.range(0.025, 0.05), rng.range(0.8, 2.2), [1.0, 0.9, 0.5], [0.9, 0.25, 0.05], rng));
+            new.push(Puff::new(FxKind::Spark, center + d * 0.3, v, rng.range(0.02, 0.035), rng.range(0.8, 2.2), [1.0, 0.92, 0.6], [1.0, 0.35, 0.05], rng));
         }
-        let smoke = (8.0 + r * 5.0) as usize;
+        // The smoke after it: dark and thick, rolling up into a column.
+        let smoke = (14.0 + r * 6.0) as usize;
         for _ in 0..smoke {
             let d = rng.unit();
-            let x = center + d * rng.range(0.0, r * 0.7);
-            let v = d * rng.range(0.5, 2.0) + v3(0.0, rng.range(0.8, 2.2), 0.0);
-            let g = rng.range(0.18, 0.32);
-            new.push(Puff::new(FxKind::Smoke, x, v, rng.range(0.35, 0.65) * (0.7 + r * 0.1), rng.range(3.0, 6.5), [g * 0.8, g * 0.75, g * 0.7], [0.55, 0.55, 0.56], rng));
+            let x = center + d * rng.range(0.0, r * 0.6);
+            let v = d * rng.range(0.4, 1.6) + v3(0.0, rng.range(1.0, 2.6), 0.0);
+            let g = rng.range(0.16, 0.26);
+            let mut p = Puff::new(FxKind::Smoke, x, v, rng.range(0.4, 0.7) * (0.7 + r * 0.12), rng.range(5.0, 9.0), [g, g * 0.95, g * 0.9], [0.5, 0.5, 0.52], rng);
+            p.alpha = 0.75;
+            p.delay = rng.range(0.0, 0.25);
+            new.push(p);
         }
         for p in new {
             self.puff(p);
@@ -2060,7 +2194,7 @@ impl Env {
         self.blasts.retain(|b| now - b.at < 2.0);
         let wind = wind_at(now, st.wind());
         let g = st.gravity();
-        // Fire, campfires and lava give off smoke.
+        // Fire, campfires and lava give off smoke and embers.
         if st.smoke && dt > 0.0 {
             self.emitters.retain(|p, _| {
                 let d = v3(f64::from(p[0]), f64::from(p[1]), f64::from(p[2])) - camera;
@@ -2068,52 +2202,91 @@ impl Env {
             });
             let list: Vec<([i32; 3], u8)> = self.emitters.iter().map(|(p, k)| (*p, *k)).collect();
             for (p, kind) in list {
-                // Puffs a second, size, life.
-                let (rate, size, life, from) = match kind {
-                    1 => (2.5, 0.16, 3.5, [0.2, 0.2, 0.2]),
-                    2 => (2.0, 0.15, 3.5, [0.22, 0.25, 0.27]),
-                    3 => (3.5, 0.2, 7.0, [0.32, 0.32, 0.32]),
-                    4 => (3.0, 0.2, 7.0, [0.3, 0.33, 0.35]),
-                    _ => (0.12, 0.14, 3.0, [0.25, 0.22, 0.2]),
-                };
-                if self.rng.next() > rate * dt {
-                    continue;
-                }
-                let base = v3(f64::from(p[0]), f64::from(p[1]), f64::from(p[2]));
-                let x = base + v3(self.rng.range(0.25, 0.75), if kind == 5 { 1.0 } else { 0.6 }, self.rng.range(0.25, 0.75));
-                let v = v3(self.rng.range(-0.1, 0.1), self.rng.range(0.8, 1.4), self.rng.range(-0.1, 0.1));
-                let p = Puff::new(FxKind::Smoke, x, v, size * self.rng.range(0.8, 1.2), life * self.rng.range(0.8, 1.2), from, [0.62, 0.62, 0.63], &mut self.rng);
-                self.puff(p);
+                self.emit_fire(p, kind, dt);
             }
         }
-        // The puffs.
+        // The smoke keeps apart from itself, so where it cannot rise it spreads.
+        let spread = self.smoke_spread();
+        let t_now = self.clock;
         let mut i = 0;
         while i < self.puffs.len() {
+            let push = spread.get(i).copied().unwrap_or_default();
             let p = &mut self.puffs[i];
-            p.age += dt;
+            if p.delay > 0.0 {
+                p.delay -= dt;
+                i += 1;
+                continue;
+            }
+            // Smoke caught under a ceiling ages slowly: it gathers there.
+            p.age += if p.held > 0.3 { dt * 0.35 } else { dt };
             if p.age >= p.life {
                 self.puffs.swap_remove(i);
                 continue;
             }
+            p.roll += p.spin * dt;
+            let ph = f64::from(p.seed % 1000) * 0.0063;
             match p.kind {
                 FxKind::Smoke => {
-                    // Warm smoke rises and slows; the wind takes it, more the higher it gets.
-                    let lift = 1.6 * (1.0 - p.age / p.life);
-                    let pull = (wind - v3(p.v.x, 0.0, p.v.z)) * (0.6 * dt);
-                    p.v = p.v + pull + v3(0.0, lift * dt, 0.0);
-                    p.v = p.v * (1.0 - 1.2 * dt).max(0.0);
+                    let t = p.age / p.life;
+                    // Warm smoke rises and cools; swirls in the air; the wind takes it.
+                    let lift = 1.5 * (1.0 - t).max(0.0).sqrt();
+                    let swirl = v3((p.x.y * 1.3 + t_now * 0.7 + ph).sin(), 0.0, (p.x.y * 1.1 + t_now * 0.9 + ph * 1.7).cos()) * 0.55;
+                    let pull = (wind - v3(p.v.x, 0.0, p.v.z)) * 0.55;
+                    p.v = p.v + (pull + swirl + push * 2.5 + v3(0.0, lift, 0.0)) * dt;
+                    p.v = p.v * (1.0 - 0.9 * dt).max(0.0);
+                    let r = (p.size * p.scale() * 0.45).clamp(0.08, 0.6);
+                    let mut next = p.x + p.v * dt;
+                    if solid(world, next + v3(0.0, r, 0.0)) {
+                        // A ceiling: it stops rising and flows out sideways along it.
+                        p.held += dt;
+                        p.v.y = p.v.y.min(0.0) * 0.2;
+                        next.y = p.x.y.min(next.y);
+                        let out = v3(push.x, 0.0, push.z);
+                        p.v = p.v + out * (4.0 * dt);
+                    } else {
+                        p.held = (p.held - dt * 0.5).max(0.0);
+                    }
+                    // Walls: it slides along them.
+                    for k in [0usize, 2] {
+                        let mut probe = p.x;
+                        probe.set(k, next.get(k) + r * p.v.get(k).signum());
+                        if solid(world, probe) {
+                            let vk = p.v.get(k);
+                            p.v.set(k, -vk * 0.25);
+                            next.set(k, p.x.get(k));
+                        }
+                    }
+                    if solid(world, next) {
+                        next = p.x;
+                    }
+                    p.x = next;
+                }
+                FxKind::Flame => {
+                    p.v = p.v * (1.0 - 3.0 * dt).max(0.0) + v3(0.0, 1.8 * dt, 0.0);
+                    p.x = p.x + p.v * dt;
+                }
+                FxKind::Ember => {
+                    let swirl = v3((t_now * 3.1 + ph).sin(), 0.0, (t_now * 2.7 + ph * 1.3).cos()) * 1.4;
+                    p.v = p.v + (swirl + v3(0.0, 0.9, 0.0) + (wind - p.v) * 0.3) * dt;
+                    p.v = p.v * (1.0 - 1.1 * dt).max(0.0);
                     let next = p.x + p.v * dt;
-                    if solid(world, next + v3(0.0, p.size, 0.0)) {
-                        // Under a ceiling it spreads sideways.
-                        p.v = v3(p.v.x * 1.2 + (next.x - next.x.floor() - 0.5) * 0.3, -0.05, p.v.z * 1.2 + (next.z - next.z.floor() - 0.5) * 0.3);
+                    if solid(world, next) {
+                        p.age = p.life;
                     } else {
                         p.x = next;
                     }
                 }
-                FxKind::Flame => {
-                    p.v = p.v * (1.0 - 3.0 * dt).max(0.0) + v3(0.0, 1.5 * dt, 0.0);
-                    p.x = p.x + p.v * dt;
+                FxKind::Dust => {
+                    p.v.y -= 2.2 * dt;
+                    p.v = p.v * (1.0 - 2.5 * dt).max(0.0) + wind * (0.6 * dt);
+                    let next = p.x + p.v * dt;
+                    if solid(world, next) {
+                        p.v = V3::default();
+                    } else {
+                        p.x = next;
+                    }
                 }
+                FxKind::Foam => {}
                 FxKind::Spark => {
                     p.v.y -= g * dt;
                     p.v = p.v * (1.0 - 0.4 * dt);
@@ -2162,51 +2335,194 @@ impl Env {
         }
     }
 
-    pub fn emit(&self, camera: V3, white: [f32; 4], world: &dyn World, out: &mut Vec<Vertex>) {
-        for p in &self.puffs {
-            let t = (p.age / p.life).clamp(0.0, 1.0);
-            let half = p.size * p.scale();
-            if half <= 0.005 {
+    /// A fire block of `kind` (`scan_found`) at `p` for `dt` seconds: its smoke and embers.
+    fn emit_fire(&mut self, p: [i32; 3], kind: u8, dt: f64) {
+        let base = v3(f64::from(p[0]), f64::from(p[1]), f64::from(p[2]));
+        // Smoke a second, its size, life, colours and opacity; embers a second and their colour.
+        let (rate, size, life, from, to, alpha, embers, ember) = match kind {
+            1 => (5.0, 0.16, 4.5, [0.16, 0.15, 0.14], [0.48, 0.48, 0.49], 0.5, 2.5, [1.0, 0.62, 0.18]),
+            2 => (4.0, 0.15, 4.0, [0.18, 0.21, 0.23], [0.48, 0.52, 0.55], 0.45, 2.0, [0.45, 0.9, 1.0]),
+            3 => (13.0, 0.22, 9.0, [0.36, 0.36, 0.36], [0.74, 0.74, 0.75], 0.42, 1.2, [1.0, 0.62, 0.18]),
+            4 => (12.0, 0.22, 9.0, [0.33, 0.37, 0.4], [0.7, 0.74, 0.77], 0.42, 1.0, [0.45, 0.9, 1.0]),
+            _ => (0.15, 0.14, 3.5, [0.25, 0.22, 0.2], [0.55, 0.55, 0.55], 0.4, 0.3, [1.0, 0.55, 0.1]),
+        };
+        let y = match kind {
+            5 => 1.0,
+            3 | 4 => 0.55,
+            _ => 0.35,
+        };
+        let campfire = kind == 3 || kind == 4;
+        // How many this frame: the whole part, and the rest by chance.
+        let mut count = |rate: f64| {
+            let n = rate * dt;
+            n.floor() as usize + usize::from(self.rng.next() < n.fract())
+        };
+        let (smokes, sparks) = (count(rate), count(embers));
+        for _ in 0..smokes {
+            let rng = &mut self.rng;
+            let x = base + v3(rng.range(0.3, 0.7), y + rng.range(0.0, 0.2), rng.range(0.3, 0.7));
+            let up = if campfire { rng.range(1.2, 1.9) } else { rng.range(0.9, 1.5) };
+            let v = v3(rng.range(-0.15, 0.15), up, rng.range(-0.15, 0.15));
+            let mut puff = Puff::new(FxKind::Smoke, x, v, size * rng.range(0.8, 1.2), life * rng.range(0.8, 1.2), from, to, rng);
+            puff.alpha = alpha;
+            self.puff(puff);
+        }
+        for _ in 0..sparks {
+            let rng = &mut self.rng;
+            let puff = if kind == 5 {
+                // Lava pops: a fleck of it thrown up, falling back.
+                let x = base + v3(rng.range(0.2, 0.8), 1.0, rng.range(0.2, 0.8));
+                let v = v3(rng.range(-0.8, 0.8), rng.range(2.5, 4.5), rng.range(-0.8, 0.8));
+                Puff::new(FxKind::Spark, x, v, rng.range(0.015, 0.025), rng.range(0.8, 1.4), [1.0, 0.75, 0.25], [0.8, 0.2, 0.02], rng)
+            } else {
+                let x = base + v3(rng.range(0.2, 0.8), y - 0.1 + rng.range(0.0, 0.3), rng.range(0.2, 0.8));
+                let v = v3(rng.range(-0.3, 0.3), rng.range(0.8, 1.8), rng.range(-0.3, 0.3));
+                Puff::new(FxKind::Ember, x, v, rng.range(0.018, 0.03), rng.range(1.0, 2.6), ember, [0.8, 0.15, 0.02], rng)
+            };
+            self.puff(puff);
+        }
+    }
+
+    /// For each puff, which way the smoke around it pushes it (nothing for other kinds).
+    fn smoke_spread(&self) -> Vec<V3> {
+        let n = self.puffs.len();
+        let mut push = vec![V3::default(); n];
+        let smoke = |p: &Puff| p.kind == FxKind::Smoke && p.delay <= 0.0;
+        let mut grid: HashMap<(i32, i32, i32), Vec<usize>> = HashMap::new();
+        for (i, p) in self.puffs.iter().enumerate() {
+            if smoke(p) {
+                grid.entry((floor(p.x.x), floor(p.x.y), floor(p.x.z))).or_default().push(i);
+            }
+        }
+        for (i, p) in self.puffs.iter().enumerate() {
+            if !smoke(p) {
                 continue;
             }
-            let color = abgr(mix3(p.from, p.to, t));
-            let spin = p.q.mul(Quat::axis_angle(p.w.norm(), p.w.len() * p.age)).normalize();
-            let (light, shaded) = match p.kind {
-                FxKind::Smoke => (world.light(floor(p.x.x), floor(p.x.y), floor(p.x.z)), true),
-                _ => (GLOW, false),
-            };
-            cube(p.x - camera, half, spin, white, color, light, shaded, out);
+            let ri = (p.size * p.scale() * 0.5).clamp(0.1, 0.8);
+            let c = (floor(p.x.x), floor(p.x.y), floor(p.x.z));
+            for dx in -1..=1 {
+                for dy in -1..=1 {
+                    for dz in -1..=1 {
+                        let Some(list) = grid.get(&(c.0 + dx, c.1 + dy, c.2 + dz)) else { continue };
+                        for &j in list {
+                            if j == i {
+                                continue;
+                            }
+                            let q = &self.puffs[j];
+                            let rj = (q.size * q.scale() * 0.5).clamp(0.1, 0.8);
+                            let d = p.x - q.x;
+                            let l = d.len();
+                            let reach = ri + rj;
+                            if l >= reach {
+                                continue;
+                            }
+                            if l < 1e-6 {
+                                let a = f64::from(p.seed % 628) * 0.01;
+                                push[i] = push[i] + v3(a.cos(), 0.0, a.sin()) * 0.5;
+                            } else {
+                                push[i] = push[i] + d * ((reach - l) / reach / l);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        push
+    }
+
+    pub fn emit(&self, camera: V3, white: [f32; 4], world: &dyn World, out: &mut Vec<Vertex>) {
+        let lit = |p: V3| world.light(floor(p.x), floor(p.y), floor(p.z));
+        let mut shapes: Vec<Shape> = Vec::new();
+        for p in &self.puffs {
+            if p.delay > 0.0 {
+                continue;
+            }
+            let t = (p.age / p.life).clamp(0.0, 1.0);
+            let radius = p.size * p.scale();
+            let alpha = p.opacity();
+            if radius <= 0.004 || alpha < 0.11 {
+                continue;
+            }
+            let at = p.x - camera;
+            let mut shape = Shape::new(at, radius, p.roll, p.seed, mix3(p.from, p.to, t), alpha, GLOW);
+            match p.kind {
+                FxKind::Smoke => {
+                    shape.light = lit(p.x);
+                    // Thicker in the middle of each puff, soft at its edge.
+                    shape.core = 1.0;
+                }
+                FxKind::Flame => {
+                    // Hot centre: the middle whiter than the rim.
+                    shape.core = 1.0;
+                    shape.center_rgb = Some(mix3([1.0, 0.96, 0.78], mix3(p.from, p.to, t), t.sqrt()));
+                }
+                FxKind::Spark => {
+                    shape.stretch = Some((p.v, 1.0 + p.v.len() * 0.09));
+                    shape.segments = 6;
+                }
+                FxKind::Ember => {
+                    shape.segments = 6;
+                    shape.center_rgb = Some([1.0, 0.95, 0.75]);
+                }
+                FxKind::Dust => {
+                    shape.light = lit(p.x);
+                    shape.segments = 8;
+                }
+                FxKind::Foam => {
+                    shape.light = lit(p.x + v3(0.0, 0.2, 0.0));
+                    shape.flat = true;
+                    shape.segments = 10;
+                }
+            }
+            shapes.push(shape);
         }
         for d in &self.drops {
             let t = (d.age / d.life).clamp(0.0, 1.0);
-            let half = d.size * ((1.0 - t) / 0.3).min(1.0);
-            if half <= 0.004 {
+            let radius = d.size * ((1.0 - t) / 0.3).min(1.0);
+            if radius <= 0.004 {
                 continue;
             }
-            if d.lava {
-                let c = abgr(mix3([1.0, 0.62, 0.15], [0.75, 0.2, 0.02], t));
-                cube(d.x - camera, half, Quat::IDENTITY, white, c, GLOW, false, out);
+            let at = d.x - camera;
+            let stretch = Some((d.v, 1.0 + d.v.len() * 0.06));
+            let mut shape = if d.lava {
+                let mut s = Shape::new(at, radius * 1.2, 0.0, 7, mix3([1.0, 0.62, 0.15], [0.75, 0.2, 0.02], t), 0.95, GLOW);
+                s.center_rgb = Some([1.0, 0.85, 0.45]);
+                s
             } else {
-                let light = world.light(floor(d.x.x), floor(d.x.y), floor(d.x.z));
-                let c = abgr([0.24 + d.shade * 0.1, 0.42 + d.shade * 0.1, 0.86 + d.shade * 0.08]);
-                cube(d.x - camera, half, Quat::IDENTITY, white, c, light, true, out);
-            }
+                let c = [0.62 + d.shade * 0.1, 0.76 + d.shade * 0.08, 0.98];
+                let mut s = Shape::new(at, radius * 1.15, 0.0, 7, c, 0.62, lit(d.x));
+                // A drop catches the light in its middle.
+                s.center_rgb = Some([0.92, 0.96, 1.0]);
+                s
+            };
+            shape.stretch = stretch;
+            shape.segments = 6;
+            shapes.push(shape);
         }
         for f in &self.prints {
             let t = (f.age / 30.0).clamp(0.0, 1.0);
-            // From a pressed, shaded print to the snow around it.
-            let color = abgr(mix3([0.7, 0.75, 0.82], [0.95, 0.97, 1.0], t * t));
+            // The snow slowly fills the print in again.
+            let alpha = 0.5 * (1.0 - t).powf(1.5);
+            if alpha < 0.11 {
+                continue;
+            }
             let light = world.light(floor(f.x.x), floor(f.x.y + 0.1), floor(f.x.z));
             let (s, c) = f.yaw.sin_cos();
             let fwd = v3(-s, 0.0, c);
-            let side = v3(c, 0.0, s);
-            let at = f.x - camera;
-            let rect = |center: f64, half_l: f64, half_w: f64| -> [V3; 4] {
-                let m = at + fwd * center;
-                [m - fwd * half_l - side * half_w, m - fwd * half_l + side * half_w, m + fwd * half_l + side * half_w, m + fwd * half_l - side * half_w]
-            };
-            quad(rect(0.06, 0.1, 0.075), white, color, light, out);
-            quad(rect(-0.13, 0.055, 0.065), white, color, light, out);
+            // The shadow in a pressed print is blue, deepest where the foot sank most.
+            for (along, radius, depth) in [(0.07, 0.085, 1.0), (-0.12, 0.062, 0.85)] {
+                let mut sh = Shape::new(f.x + fwd * along - camera, radius, 0.0, 3, [0.62, 0.69, 0.82], alpha * depth, light);
+                sh.flat = true;
+                sh.stretch = Some((fwd, 1.45));
+                sh.segments = 10;
+                sh.center_rgb = Some([0.5, 0.57, 0.72]);
+                shapes.push(sh);
+            }
+        }
+        // Far ones first: each is blended over what is behind it.
+        shapes.sort_by(|a, b| (b.at.dot(b.at)).partial_cmp(&a.at.dot(a.at)).unwrap_or(std::cmp::Ordering::Equal));
+        for s in &shapes {
+            s.draw(white, out);
         }
     }
 
@@ -2235,6 +2551,15 @@ impl Env {
         let (s, c) = r.sin_cos();
         let side = v3(c, 0.0, s) * if self.left { -0.13 } else { 0.13 };
         self.prints.push(Print { x: here + side + v3(0.0, 0.004, 0.0), yaw: r, age: 0.0 });
+        // A little powder kicked up by the step.
+        let fwd = v3(-s, 0.0, c);
+        for _ in 0..4 {
+            let rng = &mut self.rng;
+            let x = here + side + fwd * rng.range(0.0, 0.15) + v3(rng.range(-0.08, 0.08), 0.03, rng.range(-0.08, 0.08));
+            let v = fwd * rng.range(0.3, 0.9) + v3(rng.range(-0.3, 0.3), rng.range(0.6, 1.3), rng.range(-0.3, 0.3));
+            let puff = Puff::new(FxKind::Dust, x, v, rng.range(0.03, 0.055), rng.range(0.5, 0.9), [0.96, 0.97, 1.0], [0.92, 0.94, 0.98], rng);
+            self.puff(puff);
+        }
         if self.prints.len() > 240 {
             self.prints.remove(0);
         }
@@ -2509,32 +2834,45 @@ pub fn leads(drawn: &[Vertex], camera: [f64; 3], world: &dyn World, out: &mut Ve
     }
 }
 
-/// A square tube of `half` thickness along `pts`, its segments in alternating colours.
+/// A round tube (six sides, lit by its normals) of `half` thickness along `pts`, its segments in
+/// alternating colours like vanilla's lead.
 fn tube(pts: &[V3], half: f64, colors: [u32; 2], light: u32, uv: [f32; 2], out: &mut Vec<Vertex>) {
-    for (k, w) in pts.windows(2).enumerate() {
-        let d = (w[1] - w[0]).norm();
-        let side = {
-            let s = d.cross(v3(0.0, 1.0, 0.0));
-            if s.len() < 1e-6 { v3(1.0, 0.0, 0.0) } else { s.norm() }
-        };
-        let up = side.cross(d).norm();
-        let ring = |p: V3| [p + side * half + up * half, p - side * half + up * half, p - side * half - up * half, p + side * half - up * half];
-        let (ra, rb) = (ring(w[0]), ring(w[1]));
+    const SIDES: usize = 6;
+    let pack = |x: f64| (x.clamp(-1.0, 1.0) * 127.0) as i8;
+    // A frame carried along the rope, so the sides never twist.
+    let mut side = v3(1.0, 0.0, 0.0);
+    let mut rings: Vec<Vec<(V3, V3)>> = Vec::with_capacity(pts.len());
+    for k in 0..pts.len() {
+        let a = pts[k.saturating_sub(1)];
+        let b = pts[(k + 1).min(pts.len() - 1)];
+        let d = (b - a).norm();
+        let s = side - d * side.dot(d);
+        side = if s.len() < 1e-6 { d.cross(v3(0.0, 1.0, 0.0)).norm() } else { s.norm() };
+        let up = d.cross(side).norm();
+        rings.push(
+            (0..SIDES)
+                .map(|i| {
+                    let a = std::f64::consts::TAU * i as f64 / SIDES as f64;
+                    let n = side * a.cos() + up * a.sin();
+                    (pts[k] + n * half, n)
+                })
+                .collect(),
+        );
+    }
+    for (k, w) in rings.windows(2).enumerate() {
         let color = colors[k % 2];
-        for f in 0..4 {
-            let g = (f + 1) % 4;
-            for order in [[ra[f], ra[g], rb[g], rb[f]], [rb[f], rb[g], ra[g], ra[f]]] {
-                for p in order {
-                    out.push(Vertex {
-                        pos: [p.x as f32, p.y as f32, p.z as f32],
-                        uv,
-                        layer: 0,
-                        color,
-                        light,
-                        normal: [0; 4],
-                        glint_uv: [0.0, 0.0],
-                    });
-                }
+        for f in 0..SIDES {
+            let g = (f + 1) % SIDES;
+            for (p, n) in [w[0][f], w[0][g], w[1][g], w[1][f]] {
+                out.push(Vertex {
+                    pos: [p.x as f32, p.y as f32, p.z as f32],
+                    uv,
+                    layer: 0,
+                    color,
+                    light,
+                    normal: [pack(n.x), pack(n.y), pack(n.z), -127],
+                    glint_uv: [0.0, 0.0],
+                });
             }
         }
     }
@@ -2623,11 +2961,15 @@ pub fn cape(id: u32, rest: &[Vertex], pivot: [f32; 3], out: &mut Vec<Vertex>) ->
                     for c in 0..CAPE_W {
                         let k = at(r, c);
                         let p = cl.pts[k];
-                        let vel = (p - cl.prev[k]) * 0.96;
+                        let vel = (p - cl.prev[k]) * 0.99;
                         cl.prev[k] = p;
-                        // A cloth catches the wind; a little flutter so it never hangs dead.
-                        let flutter = ((self_hash(id) + r as f64 * 0.7 + c as f64 * 0.3) + frame as f64 * 0.21).sin() * 0.25;
-                        let force = v3(0.0, -g * 0.5, 0.0) + wind * (1.0 + flutter);
+                        // The air drags the cloth toward its own speed: running, the cape trails
+                        // and lifts behind; standing in wind, it blows out. A ripple travels down
+                        // it so it never hangs dead.
+                        let speed = vel * (1.0 / h.max(1e-6));
+                        let ripple = ((self_hash(id) + r as f64 * 0.9 + c as f64 * 0.35) - s.env.clock * 7.0).sin();
+                        let air = wind * (1.0 + 0.3 * ripple) + v3(0.0, ripple * 0.15, 0.0);
+                        let force = v3(0.0, -g * 0.5, 0.0) + (air - speed) * 2.2;
                         cl.pts[k] = p + vel + force * (h * h);
                     }
                 }
@@ -2798,7 +3140,21 @@ impl Env {
     }
 
     /// Something fell into water at `at` with downward `speed` (blocks a second): a splash.
+    /// White froth on the water at `at`, `n` puffs over `reach` blocks.
+    fn foam(&mut self, at: V3, n: usize, reach: f64, size: f64) {
+        for _ in 0..n {
+            let rng = &mut self.rng;
+            let a = rng.range(0.0, std::f64::consts::TAU);
+            let r = reach * rng.next().sqrt();
+            let x = at + v3(a.cos() * r, 0.0, a.sin() * r);
+            let puff = Puff::new(FxKind::Foam, x, V3::default(), size * rng.range(0.7, 1.3), rng.range(1.2, 2.6), [0.93, 0.96, 0.98], [0.85, 0.9, 0.95], rng);
+            self.puff(puff);
+        }
+    }
+
     pub fn splash(&mut self, at: V3, speed: f64) {
+        let froth = (6.0 + speed * 2.0).min(24.0) as usize;
+        self.foam(v3(at.x, at.y + 0.01, at.z), froth, 0.7, 0.16);
         let n = (12.0 + speed * 18.0).min(80.0) as usize;
         for _ in 0..n {
             let a = self.rng.range(0.0, std::f64::consts::TAU);
@@ -2875,6 +3231,7 @@ impl Env {
                 }
             }
         }
+        let mut landed: Vec<V3> = Vec::new();
         let mut i = 0;
         while i < self.drops.len() {
             let d = &mut self.drops[i];
@@ -2883,9 +3240,19 @@ impl Env {
             // was poured into is water itself).
             let joined = d.age > 0.5 && !d.lava && matches!(world.cell(floor(d.x.x), floor(d.x.y), floor(d.x.z)), Cell::Fluid);
             if d.age >= d.life || joined || d.x.y < -100.0 {
+                if joined && self.puffs.len() < MAX_PUFFS - 50 {
+                    landed.push(d.x);
+                }
                 self.drops.swap_remove(i);
             } else {
                 i += 1;
+            }
+        }
+        // Where drops fell back into the water, a fleck of froth.
+        for x in landed.into_iter().take(12) {
+            if self.rng.next() < 0.35 {
+                let top = x.y.floor() + 0.9;
+                self.foam(v3(x.x, top, x.z), 1, 0.05, 0.08);
             }
         }
     }
