@@ -4,7 +4,7 @@ fn horizon_physics_fishing(
     game: &crate::game::Game<'_>,
     alpha: f64,
     size: [u32; 2],
-) -> ::core::ops::ControlFlow<Vec<horizon_client::gizmos::Line>> {
+) -> ::core::ops::ControlFlow<Vec<Line>> {
     use horizon_client::native_horizon_physics as hp;
     if !hp::ropes_on() {
         return ::core::ops::ControlFlow::Continue(());
