@@ -5,6 +5,24 @@ extern crate self as horizon_client;
 extern crate self as horizon_client_render;
 
 pub mod mesher {
+    pub struct TerrainVertex { pub pos: [f32; 3] }
+    pub struct Info { pub fluid: FluidState }
+    #[derive(Clone, Copy)]
+    pub struct FluidState;
+    #[derive(PartialEq)]
+    pub enum FluidKind { Water, FlowingWater, Lava }
+    impl FluidState { pub fn kind(&self) -> FluidKind { FluidKind::Water } }
+    pub struct MeshTables { info: Vec<Info> }
+    pub struct Padded { blocks: Vec<u32> }
+    pub struct SectionMesh { pub translucent: Vec<TerrainVertex> }
+    fn pi(x: i32, y: i32, z: i32) -> usize { 0 }
+    pub mod fluid {
+        use super::{MeshTables, Padded, SectionMesh, FluidKind, pi};
+        pub(super) fn tesselate(tables: &MeshTables, nether: bool, pad: &Padded, water_color: u32, out: &mut SectionMesh, [x, y, z]: [i32; 3]) {
+            //FLUID//
+            if let ::core::ops::ControlFlow::Break(()) = __h_fluid(tables, nether, pad, water_color, &mut *out, [x, y, z]) { return; }
+        }
+    }
     #[repr(C)]
     #[derive(Clone, Copy, Debug)]
     pub struct Vertex {
@@ -194,7 +212,7 @@ pub mod game {
         pub flying: bool,
     }
     pub struct UiResources { pub atlas: HudAtlas }
-    pub struct World;
+    pub struct World { pub game_time: i64 }
     impl World {
         pub fn block(&self, x: i32, y: i32, z: i32) -> BlockStateId { BlockStateId(0) }
         pub fn is_air(&self, s: BlockStateId) -> bool { s.0 == 0 }
@@ -231,6 +249,8 @@ pub mod game {
         native_shaders: native_shaders::NativeShaders,
         settings: GameSettings,
         renderer: Option<Renderer>,
+        boats: Vec<boats::Boat>,
+        riding: Option<u32>,
         _l: std::marker::PhantomData<&'a ()>,
     }
     impl Game<'_> {
@@ -339,6 +359,17 @@ pub mod game {
             fn server_block(&mut self, pos: [i32; 3], state: i32) {
                 //AIRED//
                 __h_aired(&mut *self, pos, state);
+            }
+        }
+    }
+    pub mod boats {
+        use super::Game;
+        use horizon_client::mesher::Vertex;
+        pub struct Boat { pub id: u32, pub position: crate::geometry::Vec3, pub previous: crate::geometry::Vec3 }
+        impl Game<'_> {
+            pub(super) fn boat_geometry(&self, camera: glam::DVec3, alpha: f64, out: &mut Vec<Vertex>) {
+                //BOATS//
+                if let ::core::ops::ControlFlow::Break(()) = __h_boats(self, camera, alpha, &mut *out) { return; }
             }
         }
     }

@@ -19,7 +19,7 @@ use crate::mesher::Vertex;
 
 pub const ID: &str = "horizon_physics";
 pub const NAME: &str = "Horizon Physics";
-pub const VERSION: &str = "0.5.0";
+pub const VERSION: &str = "0.6.0";
 pub const DESCRIPTION: &str =
     "By tariksabanuz. Blocks crumble and blow apart, ragdolls, items, smoke, ropes, capes, liquids, waves and swaying plants.";
 
@@ -1292,6 +1292,7 @@ impl Default for Guard {
 
 pub static RENDER: Guard = Guard::new();
 /// Set while the lead hook draws the game's own leads into its buffer.
+pub static BOATS: Guard = Guard::new();
 pub static LEADS: Guard = Guard::new();
 
 static CAPTURE: Mutex<Option<Vec<usize>>> = Mutex::new(None);
@@ -1821,7 +1822,20 @@ pub struct Shape {
     /// Drawn out along a direction, by a factor.
     pub stretch: Option<(V3, f64)>,
     pub segments: usize,
+    /// Its rim's shape instead of a round one: points (along `u`, along `w`), times the radius.
+    pub outline: Option<&'static [(f64, f64)]>,
+    /// How opaque the rim is against the ring halfway out (0: it fades to clear).
+    pub edge: f64,
 }
+
+/// A boot's sole, toe along +u: 20 points around it, the length 1 (toe at 0.5, heel at -0.5).
+/// The ball is widest, the arch narrow, the heel round.
+static SOLE: [(f64, f64); 20] = [
+    (0.5, 0.0), (0.47, 0.15), (0.4, 0.245), (0.3, 0.285), (0.18, 0.28), (0.06, 0.245),
+    (-0.06, 0.195), (-0.18, 0.19), (-0.3, 0.21), (-0.42, 0.18), (-0.5, 0.0),
+    (-0.42, -0.18), (-0.3, -0.21), (-0.18, -0.19), (-0.06, -0.18), (0.06, -0.225),
+    (0.18, -0.265), (0.3, -0.27), (0.4, -0.23), (0.47, -0.135),
+];
 
 /// `gfx::TRANSLUCENT_PARTICLE_OVERLAY`: quads of vanilla's translucent particle layer.
 const TRANSLUCENT_PARTICLE: u32 = 15;
@@ -1843,7 +1857,7 @@ fn rgba(c: [f64; 3], a: f64) -> u32 {
 
 impl Shape {
     pub fn new(at: V3, radius: f64, roll: f64, seed: u32, rgb: [f64; 3], alpha: f64, light: u32) -> Shape {
-        Shape { at, radius, roll, seed, rgb, center_rgb: None, alpha, core: 1.0, light, flat: false, stretch: None, segments: 10 }
+        Shape { at, radius, roll, seed, rgb, center_rgb: None, alpha, core: 1.0, light, flat: false, stretch: None, segments: 10, outline: None, edge: 0.0 }
     }
 
     /// The puff as a fan of quads: the middle, a ring halfway out, the rim (clear).
@@ -1876,10 +1890,15 @@ impl Shape {
         let center_rgb = self.center_rgb.unwrap_or(self.rgb);
         let center = rgba(center_rgb, self.alpha * self.core);
         let mid = rgba(mix3(center_rgb, mid_rgb, 0.6), self.alpha * 0.82);
-        let rim = rgba(mid_rgb, 0.0);
-        let segs = self.segments.max(4);
+        let rim = rgba(mid_rgb, self.alpha * 0.82 * self.edge);
+        let segs = self.outline.map_or(self.segments.max(4), <[(f64, f64)]>::len);
         let ring: Vec<(V3, V3)> = (0..segs)
             .map(|i| {
+                if let Some(o) = self.outline {
+                    let (a, b) = o[i];
+                    let dir = u * (a * su) + w * b;
+                    return (self.at + dir * (self.radius * 0.55), self.at + dir * self.radius);
+                }
                 let a = std::f64::consts::TAU * i as f64 / segs as f64;
                 let r = self.radius * (0.8 + 0.2 * hash01(self.seed, i as u32));
                 let dir = u * (a.cos() * su) + w * a.sin();
@@ -2517,29 +2536,46 @@ impl Env {
             shape.segments = 6;
             shapes.push(shape);
         }
+        // Prints lie on the snow under everything else: drawn first, in their own order.
+        let mut ground: Vec<Shape> = Vec::new();
         for f in &self.prints {
             let t = (f.age / 30.0).clamp(0.0, 1.0);
             // The snow slowly fills the print in again.
-            let alpha = 0.5 * (1.0 - t).powf(1.5);
-            if alpha < 0.11 {
+            let fill = (1.0 - t).powf(1.5);
+            if fill * 0.6 < 0.11 {
                 continue;
             }
             let light = world.light(floor(f.x.x), floor(f.x.y + 0.1), floor(f.x.z));
             let (s, c) = f.yaw.sin_cos();
             let fwd = v3(-s, 0.0, c);
-            // The shadow in a pressed print is blue, deepest where the foot sank most.
-            for (along, radius, depth) in [(0.07, 0.085, 1.0), (-0.12, 0.062, 0.85)] {
-                let mut sh = Shape::new(f.x + fwd * along - camera, radius, 0.0, 3, [0.62, 0.69, 0.82], alpha * depth, light);
-                sh.flat = true;
-                sh.stretch = Some((fwd, 1.45));
-                sh.segments = 10;
-                sh.center_rgb = Some([0.5, 0.57, 0.72]);
-                shapes.push(sh);
+            let at = f.x - camera;
+            // A boot pressed into snow: the far wall of the print catches the light (a bright rim
+            // beyond the toe), the bottom lies in blue shade, darkest under the ball and heel.
+            let mut rim = Shape::new(at + fwd * 0.014 + v3(0.0, -0.0005, 0.0), 0.33, 0.0, 3, [1.0, 1.0, 1.0], 0.55 * fill, light);
+            rim.flat = true;
+            rim.stretch = Some((fwd, 1.0));
+            rim.outline = Some(&SOLE);
+            rim.edge = 0.6;
+            rim.center_rgb = Some([0.97, 0.98, 1.0]);
+            ground.push(rim);
+            let mut print = Shape::new(at, 0.32, 0.0, 3, [0.66, 0.73, 0.86], 0.6 * fill, light);
+            print.flat = true;
+            print.stretch = Some((fwd, 1.0));
+            print.outline = Some(&SOLE);
+            print.edge = 0.75;
+            print.center_rgb = Some([0.47, 0.55, 0.72]);
+            ground.push(print);
+            for (along, radius) in [(0.09, 0.05), (-0.1, 0.04)] {
+                let mut deep = Shape::new(at + fwd * along + v3(0.0, 0.0005, 0.0), radius, 0.0, 5, [0.5, 0.58, 0.75], 0.4 * fill, light);
+                deep.flat = true;
+                deep.stretch = Some((fwd, 1.3));
+                deep.center_rgb = Some([0.42, 0.5, 0.68]);
+                ground.push(deep);
             }
         }
         // Far ones first: each is blended over what is behind it.
         shapes.sort_by(|a, b| (b.at.dot(b.at)).partial_cmp(&a.at.dot(a.at)).unwrap_or(std::cmp::Ordering::Equal));
-        for s in &shapes {
+        for s in ground.iter().chain(&shapes) {
             s.draw(white, out);
         }
     }

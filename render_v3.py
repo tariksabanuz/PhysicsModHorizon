@@ -5,14 +5,14 @@ from PIL import Image
 
 W, H, F = 720, 540, 560.0
 
-def background(cam_y, roof, ground=(0.36, 0.55, 0.25)):
+def background(cam_y, roof, ground=(0.36, 0.55, 0.25), snow=False):
     ys, xs = np.mgrid[0:H, 0:W].astype(np.float32)
     dx, dy, dz = (xs - W / 2) / F, -(ys - H / 2) / F, np.ones_like(xs)
     img = np.zeros((H, W, 3), np.float32)
     sky = np.clip(dy * 1.5 + 0.3, 0, 1)[..., None]
     img[:] = (1 - sky) * np.array([0.78, 0.86, 0.98]) + sky * np.array([0.45, 0.63, 0.95])
     with np.errstate(divide='ignore', invalid='ignore'):
-        t = (64.0 - cam_y) / dy
+        t = ((64.125 if snow else 64.0) - cam_y) / dy
         hit = (t > 0) & (dy < 0)
         gx, gz = dx * t, dz * t
         check = ((np.floor(gx) + np.floor(gz)) % 2 == 0)[..., None]
@@ -60,9 +60,9 @@ def draw(img, soup):
 
 if __name__ == '__main__':
     out = sys.argv[1]
-    scenes = [('roof', 65.7, True), ('blast_a', 66.0, False), ('blast_b', 66.0, False), ('blast_c', 66.0, False), ('splash', 66.3, False)]
+    scenes = [('roof', 65.7, True), ('blast_a', 66.0, False), ('blast_b', 66.0, False), ('blast_c', 66.0, False), ('splash', 66.3, False), ('snow', 65.4, False)]
     for name, cy, roof in scenes:
         soup = json.load(open(f'/tmp/hp3_{name}.json'))
-        img = draw(background(cy, roof, (0.2, 0.35, 0.6) if name == 'splash' else (0.36, 0.55, 0.25)), soup)
+        img = draw(background(cy, roof, {'splash': (0.2, 0.35, 0.6), 'snow': (0.93, 0.95, 0.98)}.get(name, (0.36, 0.55, 0.25)), name == 'snow'), soup)
         Image.fromarray((np.clip(img, 0, 1) * 255).astype(np.uint8)).save(f'{out}/{name}.png')
         print(name, len(soup))

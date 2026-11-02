@@ -774,7 +774,7 @@ fn a_turning_cape_keeps_hanging() {
     }
 }
 
-// --- 0.5.0 ----------------------------------------------------------------------------------
+// --- 0.6.0 ----------------------------------------------------------------------------------
 
 #[test]
 fn poured_water_spreads_settles_and_goes() {
@@ -846,9 +846,10 @@ fn sway_table_and_shader() {
     let w = sway::wgsl(&s).unwrap();
     assert!(w.contains("case 3u: { return 5u; }"));
     assert!(!w.contains("7u: { return 1u"), "plants are off");
-    let entries = "fn horizon_material_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32) {\n    let pos = position + origin;\n}";
+    let entries = "struct HorizonMaterialOut {\n    @location(7) cylindrical: f32,\n}\nfn horizon_material_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32) {\n    let pos = position + origin;\n    out.cylindrical = max(length(pos.xz), abs(pos.y));\n}";
     let p = sway::patch(entries, "").unwrap();
-    assert!(p.contains("horizon_physics_sway(position + origin, uv, layer)"));
+    assert!(p.contains("horizon_physics_sway(position + origin, position, uv, layer)"));
+    assert!(p.contains("out.hp_open = horizon_physics_open(position, layer);"));
     assert!(sway::patch("no anchor here", "").is_none());
     sway::set(1, || names.clone(), false, false, 1.0);
     assert!(sway::patch(entries, "").is_none(), "all off: the game's own shader");
@@ -967,6 +968,17 @@ fn dump_v3() {
     let mut out = Vec::new();
     env.emit(v3(0.5, 66.3, -2.5), [0.0, 0.0, 1.0, 1.0], &w, &mut out);
     dump("splash", &out);
+    // Footprints on snow, seen from behind and above.
+    let mut env = Env::default();
+    for i in 0..40 {
+        env.footstep(v3(0.5 + (f64::from(i) * 0.15).sin() * 0.2, 64.125, f64::from(i) * 0.12), 0.0, Some(64.125));
+    }
+    for f in 0..30 {
+        env.step(1.0 / 60.0, cam, f, &Settings::default(), &w);
+    }
+    let mut out = Vec::new();
+    env.emit(v3(0.5, 65.4, -1.2), [0.0, 0.0, 1.0, 1.0], &w, &mut out);
+    dump("snow", &out);
 }
 
 #[test]
@@ -1033,4 +1045,37 @@ fn a_lead_keeps_its_shape_as_the_mob_walks_off() {
     }
     assert_eq!(env.ropes.len(), 1, "a new rope was started");
     assert!(jump < 0.15, "the lead jumps: {jump}");
+}
+
+#[test]
+fn water_is_marked_by_depth_and_shore() {
+    use crate::native_horizon_physics_sway as sway;
+    // A sea 12 deep (y 0..=11) with a beach at x >= 10, and a pond one deep at x <= -10.
+    let water = |x: i32, y: i32, z: i32| -> bool {
+        let _ = z;
+        if x >= 10 || y > 11 || y < 0 {
+            return false;
+        }
+        if x <= -10 {
+            return y == 11;
+        }
+        true
+    };
+    assert_eq!(sway::water_code(0, 11, 0, water, -2), 6, "deep open water");
+    assert_eq!(sway::water_code(10, 11, 0, water, -2), 0, "the shore stays still");
+    assert_eq!(sway::water_code(9, 11, 0, water, -2), 3, "near the shore: small");
+    assert_eq!(sway::water_code(-11, 11, 0, water, -2), 1, "a puddle");
+    // The shader and the boats move the water alike: at the shore nothing, on the sea a swell.
+    let calm = sway::water_motion(3.0, 4.0, 100.0, 0.0, 1.0);
+    assert!(calm.iter().skip(1).all(|v| v.abs() < 1e-9) && (calm[0] + 0.04).abs() < 1e-9);
+    let mut top = f64::MIN;
+    let mut low = f64::MAX;
+    for i in 0..400 {
+        let m = sway::water_motion(f64::from(i) * 0.7, 2.0, 50.0, 1.0, 1.0);
+        top = top.max(m[0]);
+        low = low.min(m[0]);
+    }
+    assert!(top - low > 1.0, "no swell on the open sea: {}", top - low);
+    // The game's clock for the water follows the world's.
+    assert!((sway::water_time(24000 * 5 + 600, 0.5) - 600.5 / 20.0).abs() < 1e-3);
 }

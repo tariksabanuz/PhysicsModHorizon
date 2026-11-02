@@ -15,7 +15,9 @@
     "crates/horizon-client-render/src/gfx/native_material.rs": "6769e49d40b4aa96d9571d9d4a9c31c5c25764310fe49cc600a92e9450dcbab5",
     "crates/horizon-client/src/game/native_shaders.rs": "eac4fdd28afb504c97536ef9315b564d93f28273c5b72c60d6bd67cbcbd51bdc",
     "crates/horizon-client/src/game/shader_packs.rs": "4e8b0ccaea80294340046b06e354ceed3d9c56f0972c78dc7e9e418c2119004c",
-    "crates/horizon-client/src/animate_tick.rs": "eb8140492e66530c50ca3e29038aec49edfee71ab83f4b42f21e210198586b95"
+    "crates/horizon-client/src/animate_tick.rs": "eb8140492e66530c50ca3e29038aec49edfee71ab83f4b42f21e210198586b95",
+    "crates/horizon-client-render/src/mesher/fluid.rs": "5ad87e9c6d34134e131214de1545adee7bb3df9cb989ceeb03b01dc2db823ef0",
+    "crates/horizon-client/src/game/boats.rs": "db59657f498626f8fc48106d58de70da26f630d52069f6dcb90a4eb5e19d5c3b"
   },
   "horizon_repository": "https://github.com/horizon-rust/horizon",
   "horizon_mixins_repository": "https://github.com/horizon-rust/horizon-mixins",

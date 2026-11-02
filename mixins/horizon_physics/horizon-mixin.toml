@@ -1,6 +1,6 @@
 [mod]
 id = "horizon_physics"
-version = "0.5.0"
+version = "0.6.0"
 priority = 100
 
 [compatibility]
@@ -149,6 +149,20 @@ bindings = [
   { name = "out", ty = "&mut Vec<Vertex>", value = "&mut *out" },
 ]
 
+# Boats ride the waves.
+[[injection]]
+id = "boats"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::boats::Game<'_>::boat_geometry"
+helper = "boats.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "self" },
+  { name = "camera", ty = "glam::DVec3", value = "camera" },
+  { name = "alpha", ty = "f64", value = "alpha" },
+  { name = "out", ty = "&mut Vec<Vertex>", value = "&mut *out" },
+]
+
 # FishingHookRenderer's line as a rope.
 [[injection]]
 id = "fishing"
@@ -203,6 +217,22 @@ file = "crates/horizon-client-render/src/lib.rs"
 name = "native_horizon_physics_sway"
 source = "sway.rs"
 visibility = "pub"
+
+# The water's surface corners get a mark of how open the water is there, for the waves.
+[[injection]]
+id = "fluid"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client_render::mesher::fluid::tesselate"
+helper = "fluid.rs"
+bindings = [
+  { name = "tables", ty = "&MeshTables", value = "tables" },
+  { name = "nether", ty = "bool", value = "nether" },
+  { name = "pad", ty = "&Padded", value = "pad" },
+  { name = "water_color", ty = "u32", value = "water_color" },
+  { name = "out", ty = "&mut SectionMesh", value = "&mut *out" },
+  { name = "cell", ty = "[i32; 3]", value = "[x, y, z]" },
+]
 
 # A Horizon shader pack's terrain shader, with the waves and sway.
 [[injection]]

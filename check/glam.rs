@@ -40,3 +40,11 @@ impl Quat {
 }
 impl Mul for Quat { type Output = Quat; fn mul(self, _: Quat) -> Quat { self } }
 impl Mat4 { pub fn transform_point3(&self, v: Vec3) -> Vec3 { v } }
+impl DVec3 { pub fn length(self) -> f64 { self.length_squared().sqrt() } }
+impl Vec3 {
+    pub const Y: Vec3 = Vec3 { x: 0.0, y: 1.0, z: 0.0 };
+    pub fn from_array(a: [f32; 3]) -> Self { Self::new(a[0], a[1], a[2]) }
+    pub fn to_array(self) -> [f32; 3] { [self.x, self.y, self.z] }
+    pub fn normalize(self) -> Self { self }
+}
+impl Quat { pub fn from_rotation_arc(_: Vec3, _: Vec3) -> Self { Quat([0.0; 4]) } }
