@@ -5,6 +5,13 @@
 fn horizon_physics_builtin(game: &mut crate::game::Game<'_>) {
     use horizon_client::native_horizon_physics as hp;
     use horizon_client_render::native_horizon_physics_sway as sway;
+    // The sections where the snow was pressed are meshed again.
+    let sections = game.world.layout().height() / 16;
+    for k in sway::snow_take_dirty() {
+        if (0..sections as i32).contains(&k.1) {
+            game.world.dirty_sections.insert(k);
+        }
+    }
     static DEV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     if *DEV.get_or_init(|| std::env::var_os("HORIZON_SHADER_PACK").is_some()) {
         return;

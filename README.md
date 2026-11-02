@@ -16,9 +16,10 @@ brings PhysicsMod-style physics to the client, written from scratch:
   Pieces lying around and mobs killed by the blast are thrown too.
 - **Smoke and fire**: fire, soul fire, lit campfires and open lava give off soft, see-through smoke
   that rises, swirls, drifts with the wind and gathers and spreads under ceilings, and glowing embers.
-- **Snow**: walking on snow presses boot prints, left and right: a sole with a deeper ball and heel
-  in blue shade and a bright far wall, and kicks up powder; the snow fills them in again over 30
-  seconds.
+- **Snow**: the snow gives way: where the player and the mobs walk, the snow (layers, snow blocks
+  and powder snow) is pressed down into a trough with a lip of pushed-up snow beside it, real
+  terrain shaded like the game shades its faces, and each step kicks up powder. The prints stay
+  while the blocks are loaded (up to 3000 blocks).
 - **Ropes**: leads (round, lit, heavy: the wind barely moves them) and fishing lines sag, swing and
   lie on the blocks.
 - **Cloth capes**: capes are cloth that the air drags: they trail and lift when you run, blow out in
@@ -37,6 +38,10 @@ brings PhysicsMod-style physics to the client, written from scratch:
 - **Gravity**: Earth, Moon, Mars, Pluto or none, for the pieces.
 
 Settings: Options > Mods > Horizon Physics (saved in `config/horizon_physics.txt`).
+
+How the snow is pressed: each pressed block keeps a height map (8 by 8 cells); its section is
+meshed again (at most ten times a second), and the mod swaps the block's flat top for a grid at
+those heights.
 
 How the water knows where it is: when Horizon meshes a chunk, the mod raises each still water
 surface corner by a mark far too small to see (ten-thousandths of a block) that says how deep the

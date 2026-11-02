@@ -5,7 +5,8 @@ extern crate self as horizon_client;
 extern crate self as horizon_client_render;
 
 pub mod mesher {
-    pub struct TerrainVertex { pub pos: [f32; 3] }
+    #[derive(Clone, Copy)]
+    pub struct TerrainVertex { pub pos: [f32; 3], pub(crate) uv: [u16; 2], pub layer: u16, pub light: u16, pub color: u32 }
     pub struct Info { pub fluid: FluidState }
     #[derive(Clone, Copy)]
     pub struct FluidState;
@@ -15,10 +16,11 @@ pub mod mesher {
     pub struct MeshTables { pub info: Vec<Info> }
     pub struct Padded { pub blocks: Vec<u32> }
     #[derive(Default)]
-    pub struct SectionMesh { pub translucent: Vec<TerrainVertex> }
-    pub struct Chunk;
+    pub struct SectionMesh { pub solid: Vec<TerrainVertex>, pub translucent: Vec<TerrainVertex> }
+    pub struct Chunk { pub x: i32, pub z: i32 }
+    pub struct MeshRender { pub sprite_layers: std::collections::BTreeMap<String, u32> }
     pub struct MeshScratch { pub padded: Padded }
-    pub struct Mesher<'a> { pub tables: &'a MeshTables }
+    pub struct Mesher<'a> { pub tables: &'a MeshTables, pub render: &'a MeshRender }
     fn pi(x: i32, y: i32, z: i32) -> usize { 0 }
     impl Mesher<'_> {
         pub(crate) fn mesh_reusing(&mut self, region: &[[Option<&Chunk>; 3]; 3], sy: i32, mut out: SectionMesh, scratch: &mut MeshScratch) -> SectionMesh {
@@ -93,8 +95,8 @@ pub mod geometry {
 
 pub mod mobs {
     use crate::geometry::Vec3;
-    pub struct Mob { pub id: u32, pub position: Vec3, pub previous: Vec3, pub health: f32, pub kind: std::sync::Arc<MobType> }
-    pub struct MobType;
+    pub struct Mob { pub id: u32, pub position: Vec3, pub previous: Vec3, pub velocity: Vec3, pub yaw: f32, pub on_ground: bool, pub health: f32, pub kind: std::sync::Arc<MobType> }
+    pub struct MobType { pub width: f64 }
     impl MobType { pub fn layer(&self, key: &str) -> Option<&std::sync::Arc<Part>> { None } }
     pub struct Animations;
     pub mod anim {
@@ -216,8 +218,13 @@ pub mod game {
         pub flying: bool,
     }
     pub struct UiResources { pub atlas: HudAtlas }
-    pub struct World { pub game_time: i64 }
+    pub struct DirtySections;
+    impl DirtySections { pub fn insert(&mut self, (x, sy, z): (i32, i32, i32)) {} }
+    pub struct ColumnLayout;
+    impl ColumnLayout { pub fn min_y(&self) -> i32 { -64 } pub fn height(&self) -> i32 { 384 } }
+    pub struct World { pub game_time: i64, pub dirty_sections: DirtySections }
     impl World {
+        pub fn layout(&self) -> ColumnLayout { ColumnLayout }
         pub fn block(&self, x: i32, y: i32, z: i32) -> BlockStateId { BlockStateId(0) }
         pub fn is_air(&self, s: BlockStateId) -> bool { s.0 == 0 }
         pub fn light(&self, x: i32, y: i32, z: i32) -> u8 { 0xF0 }
@@ -255,6 +262,7 @@ pub mod game {
         renderer: Option<Renderer>,
         boats: Vec<boats::Boat>,
         riding: Option<u32>,
+        mobs: Vec<crate::mobs::Mob>,
         _l: std::marker::PhantomData<&'a ()>,
     }
     impl Game<'_> {

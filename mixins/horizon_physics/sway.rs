@@ -590,3 +590,282 @@ pub fn patch(entries: &str, source: &str) -> Option<String> {
     }
     Some(format!("{patched}\n// Horizon Physics: waves, water and swaying plants\n{w}"))
 }
+
+// ---------------------------------------------------------------------------------------------
+// Snow that gives way (PhysicsMod's snow terrain deformation): where the player and the mobs
+// walk, the snow's top is pressed down into a trough with a lip of pushed-up snow along it. The
+// game side presses (`snow_press`) into a height map kept per block (`SNOW_GRID` cells a side);
+// the sections whose blocks changed are meshed again (`snow_take_dirty`), and the mesher hook
+// swaps each pressed block's flat top for a fine grid at those heights (`snow_top`), shaded like
+// the game shades its faces. The prints stay as long as the blocks are loaded, up to `SNOW_MAX`
+// blocks (the oldest go first).
+
+/// Cells along a block's side.
+pub const SNOW_GRID: usize = 8;
+const SNOW_PTS: usize = SNOW_GRID + 1;
+/// Pressed blocks kept at most.
+pub const SNOW_MAX: usize = 3000;
+
+/// One pressed block: how far each grid point is pressed down (negative: pushed up), its snow's
+/// top (in the block, 0..1) and when it was last pressed.
+#[derive(Clone, Debug)]
+pub struct SnowDent {
+    pub depth: [f32; SNOW_PTS * SNOW_PTS],
+    pub top: f32,
+    stamp: u64,
+}
+
+#[derive(Default)]
+struct Snow {
+    world: u64,
+    min_y: i32,
+    blocks: std::collections::HashMap<(i32, i32, i32), SnowDent>,
+    dirty: std::collections::HashSet<(i32, i32, i32)>,
+    clock: u64,
+}
+
+static SNOW: Mutex<Option<Snow>> = Mutex::new(None);
+
+fn snow_section(min_y: i32, b: (i32, i32, i32)) -> (i32, i32, i32) {
+    (b.0 >> 4, (b.1 - min_y) >> 4, b.2 >> 4)
+}
+
+/// The world the prints belong to (`key`: the dimension, `min_y` its bottom). Another world
+/// forgets them.
+pub fn snow_world(key: u64, min_y: i32) {
+    let mut g = SNOW.lock().unwrap_or_else(|e| e.into_inner());
+    let s = g.get_or_insert_with(Snow::default);
+    if s.world != key || s.min_y != min_y {
+        // The old world's sections are not this world's: nothing to mesh again for them.
+        s.blocks.clear();
+        s.dirty.clear();
+        s.world = key;
+        s.min_y = min_y;
+    }
+}
+
+/// Forgets every print, and meshes their blocks again flat.
+pub fn snow_clear() {
+    let mut g = SNOW.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(s) = g.as_mut()
+        && !s.blocks.is_empty()
+    {
+        let min_y = s.min_y;
+        let sections: Vec<(i32, i32, i32)> = s.blocks.keys().map(|b| snow_section(min_y, *b)).collect();
+        s.dirty.extend(sections);
+        s.blocks.clear();
+    }
+}
+
+/// How much a press at (`cx`, `cz`) (radius `r`, depth `d`, drawn out `stretch` times along the
+/// unit direction (`fx`, `fz`)) moves the snow at (`x`, `z`): down inside, a lip pushed up just
+/// outside, nothing further out.
+pub fn snow_profile(x: f64, z: f64, c: [f64; 4], r: f64, d: f64) -> f64 {
+    let (cx, cz, fx, fz) = (c[0], c[1], c[2], c[3]);
+    let (dx, dz) = (x - cx, z - cz);
+    let along = (dx * fx + dz * fz) / 1.25;
+    let across = -dx * fz + dz * fx;
+    let q = (along * along + across * across).sqrt() / r;
+    if q < 0.3 {
+        d
+    } else if q < 1.0 {
+        // A rounded wall from the floor up to the surface.
+        let t = (q - 0.3) / 0.7;
+        d * (1.0 - t * t * (3.0 - 2.0 * t))
+    } else if q < 1.6 {
+        // The lip: the snow pushed aside, a little above the surface.
+        let t = (q - 1.0) / 0.6;
+        -d * 0.18 * (std::f64::consts::PI * t).sin()
+    } else {
+        0.0
+    }
+}
+
+/// Presses the snow at `feet` (x, top of the snow, z), a body `width` wide moving along
+/// (`fx`, `fz`). `top` gives a block's snow top (its block y plus its height), None for a block
+/// that is not snow. Returns whether anything changed.
+pub fn snow_press(feet: [f64; 3], width: f64, dir: [f64; 2], top: impl Fn(i32, i32, i32) -> Option<f64>) -> bool {
+    let surface = feet[1];
+    let by = (surface - 1e-3).floor() as i32;
+    let height = surface - f64::from(by);
+    if !(0.05..=1.0001).contains(&height) {
+        return false;
+    }
+    // As deep as the snow lets it: most of a thin layer, a good part of a block in deep snow.
+    let deepest = (height - 1.0 / 32.0).min(0.42);
+    let depth = (deepest * 0.85).min(0.05 + width * 0.35);
+    if depth <= 0.005 {
+        return false;
+    }
+    let r = (width * 0.75).clamp(0.3, 1.1);
+    let len = (dir[0] * dir[0] + dir[1] * dir[1]).sqrt();
+    let (fx, fz) = if len > 1e-6 { (dir[0] / len, dir[1] / len) } else { (1.0, 0.0) };
+    let shape = [feet[0], feet[2], fx, fz];
+    let same = |x: i32, z: i32| top(x, by, z).is_some_and(|t| (t - surface).abs() < 1e-3);
+    let reach = r * 1.6 * 1.25 + 0.01;
+    let (x0, x1) = ((feet[0] - reach).floor() as i32, (feet[0] + reach).floor() as i32);
+    let (z0, z1) = ((feet[2] - reach).floor() as i32, (feet[2] + reach).floor() as i32);
+    let mut g = SNOW.lock().unwrap_or_else(|e| e.into_inner());
+    let s = g.get_or_insert_with(Snow::default);
+    s.clock += 1;
+    let clock = s.clock;
+    let min_y = s.min_y;
+    let mut changed = false;
+    for bx in x0..=x1 {
+        for bz in z0..=z1 {
+            if !same(bx, bz) {
+                continue;
+            }
+            let mut dent: Option<[f32; SNOW_PTS * SNOW_PTS]> = None;
+            for i in 0..SNOW_PTS {
+                for j in 0..SNOW_PTS {
+                    let x = f64::from(bx) + i as f64 / SNOW_GRID as f64;
+                    let z = f64::from(bz) + j as f64 / SNOW_GRID as f64;
+                    let mut v = snow_profile(x, z, shape, r, depth);
+                    if v.abs() < 1e-4 {
+                        continue;
+                    }
+                    // A point on the block's edge is shared with the next block: it moves only
+                    // if every block it touches is the same snow, so the surface stays whole.
+                    let xs: &[i32] = if i == 0 { &[-1, 0] } else if i == SNOW_GRID { &[0, 1] } else { &[0] };
+                    let zs: &[i32] = if j == 0 { &[-1, 0] } else if j == SNOW_GRID { &[0, 1] } else { &[0] };
+                    if !xs.iter().all(|dx| zs.iter().all(|dz| same(bx + dx, bz + dz))) {
+                        v = 0.0;
+                    }
+                    if v == 0.0 {
+                        continue;
+                    }
+                    let d = dent.get_or_insert_with(|| {
+                        s.blocks.get(&(bx, by, bz)).map_or([0.0; SNOW_PTS * SNOW_PTS], |b| b.depth)
+                    });
+                    let k = i * SNOW_PTS + j;
+                    let old = f64::from(d[k]);
+                    // Pressing wins over the lip; a lip only rises where nothing was pressed.
+                    let new = if v > 0.0 { old.max(v) } else if old <= 0.0 { old.min(v) } else { old };
+                    if (new - old).abs() > 0.004 {
+                        d[k] = new as f32;
+                        changed = true;
+                    }
+                }
+            }
+            if let Some(d) = dent {
+                if d.iter().all(|v| v.abs() < 1e-4) {
+                    continue;
+                }
+                let key = (bx, by, bz);
+                let fresh = s.blocks.get(&key).is_none_or(|b| b.depth != d);
+                s.blocks.insert(key, SnowDent { depth: d, top: height as f32, stamp: clock });
+                if fresh {
+                    s.dirty.insert(snow_section(min_y, key));
+                }
+            }
+        }
+    }
+    if s.blocks.len() > SNOW_MAX {
+        let mut ages: Vec<((i32, i32, i32), u64)> = s.blocks.iter().map(|(k, b)| (*k, b.stamp)).collect();
+        ages.sort_unstable_by_key(|a| a.1);
+        for (k, _) in ages.iter().take(s.blocks.len() - SNOW_MAX) {
+            s.blocks.remove(k);
+            s.dirty.insert(snow_section(min_y, *k));
+        }
+    }
+    changed
+}
+
+/// The sections to mesh again (chunk x, section index from the bottom, chunk z).
+/// At most ten times a second: a walk through snow would otherwise mesh its sections every frame.
+pub fn snow_take_dirty() -> Vec<(i32, i32, i32)> {
+    static LAST: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+    if let Ok(mut last) = LAST.lock() {
+        let now = std::time::Instant::now();
+        if last.is_some_and(|t| now.duration_since(t) < std::time::Duration::from_millis(100)) {
+            return Vec::new();
+        }
+        *last = Some(now);
+    }
+    let mut g = SNOW.lock().unwrap_or_else(|e| e.into_inner());
+    g.as_mut().map(|s| s.dirty.drain().collect()).unwrap_or_default()
+}
+
+/// The pressed blocks of the section (chunk `cx`, index `sy`, chunk `cz`), each with its
+/// section-relative position.
+pub fn snow_in_section(cx: i32, sy: i32, cz: i32) -> Vec<([i32; 3], SnowDent)> {
+    let g = SNOW.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(s) = g.as_ref() else {
+        return Vec::new();
+    };
+    if s.blocks.is_empty() {
+        return Vec::new();
+    }
+    let base = [cx * 16, s.min_y + sy * 16, cz * 16];
+    let mut out = Vec::new();
+    for (k, d) in &s.blocks {
+        if snow_section(s.min_y, *k) == (cx, sy, cz) {
+            out.push(([k.0 - base[0], k.1 - base[1], k.2 - base[2]], d.clone()));
+        }
+    }
+    out
+}
+
+/// One corner of a flat top: where it is in the block (0 or 1 along x and z) and what the game
+/// gave it: its sprite position, light (sky low byte, block high byte) and colour.
+#[derive(Clone, Copy, Debug)]
+pub struct SnowCorner {
+    pub at: [f32; 2],
+    pub uv: [f32; 2],
+    pub light: u16,
+    pub color: u32,
+}
+
+/// The pressed top of a block whose flat top had `corners` at height `y` (section-relative), its
+/// cells as quads (four corners each, counter-clockwise seen from above): position, sprite
+/// position, light, colour. The colour takes the game's face shading by the slope, and the
+/// bottom of a print is a little darker, as the light reaches it less.
+pub fn snow_top(origin: [f32; 3], y: f32, dent: &SnowDent, corners: &[SnowCorner; 4]) -> Vec<([f32; 3], [f32; 2], u16, u32)> {
+    let n = SNOW_GRID;
+    let step = 1.0 / n as f32;
+    let h = |i: usize, j: usize| -dent.depth[i.min(n) * SNOW_PTS + j.min(n)];
+    // Bilinear in the four corners, by where in the block.
+    let lerp = |fx: f32, fz: f32, f: &dyn Fn(&SnowCorner) -> f32| -> f32 {
+        let mut acc = 0.0;
+        for c in corners {
+            let wx = if c.at[0] > 0.5 { fx } else { 1.0 - fx };
+            let wz = if c.at[1] > 0.5 { fz } else { 1.0 - fz };
+            acc += wx * wz * f(c);
+        }
+        acc
+    };
+    let byte = |v: u32, s: u32| ((v >> s) & 255) as f32;
+    let point = |i: usize, j: usize| -> ([f32; 3], [f32; 2], u16, u32) {
+        let (fx, fz) = (i as f32 * step, j as f32 * step);
+        let uv = [lerp(fx, fz, &|c| c.uv[0]), lerp(fx, fz, &|c| c.uv[1])];
+        let sky = lerp(fx, fz, &|c| f32::from(c.light & 255)).round().clamp(0.0, 255.0) as u16;
+        let block = lerp(fx, fz, &|c| f32::from(c.light >> 8)).round().clamp(0.0, 255.0) as u16;
+        // The slope: Minecraft's face shading (up 1, north and south 0.8, east and west 0.6).
+        let dx = (h(i + 1, j) - h(i.saturating_sub(1), j)) / (step * if i == 0 || i == n { 1.0 } else { 2.0 });
+        let dz = (h(i, j + 1) - h(i, j.saturating_sub(1))) / (step * if j == 0 || j == n { 1.0 } else { 2.0 });
+        let len = (dx * dx + 1.0 + dz * dz).sqrt();
+        let (nx, ny, nz) = (-dx / len, 1.0 / len, -dz / len);
+        let shade = ny * ny + nx * nx * 0.6 + nz * nz * 0.8;
+        let deep = (dent.depth[i * SNOW_PTS + j]).max(0.0);
+        let k = (shade * (1.0 - deep * 0.55)).clamp(0.35, 1.0);
+        let mut color = 0u32;
+        for s in [0u32, 8, 16] {
+            let v = lerp(fx, fz, &|c| byte(c.color, s)) * k;
+            color |= (v.round().clamp(0.0, 255.0) as u32) << s;
+        }
+        color |= corners[0].color & 0xff00_0000;
+        let pos = [origin[0] + fx, y + h(i, j), origin[2] + fz];
+        (pos, uv, sky | block << 8, color)
+    };
+    let mut out = Vec::with_capacity(n * n * 4);
+    for i in 0..n {
+        for j in 0..n {
+            out.push(point(i, j));
+            out.push(point(i, j + 1));
+            out.push(point(i + 1, j + 1));
+            out.push(point(i + 1, j));
+        }
+    }
+    out
+}

@@ -426,20 +426,20 @@ fn a_rope_sags_lies_on_the_ground_and_keeps_its_length() {
 }
 
 #[test]
-fn footprints_alternate_on_snow_only() {
+fn steps_on_snow_kick_up_powder_only() {
+    // The print itself is the snow pressed down (`snow_gives_way_where_walked`); a step only
+    // kicks up powder, and only on snow.
     let mut env = Env::default();
     for i in 0..60 {
         env.footstep(v3(f64::from(i) * 0.1, 64.125, 0.0), -90.0, Some(64.125));
     }
-    let n = env.prints.len();
-    assert!((9..=11).contains(&n), "{n} prints over 6 blocks");
-    let sides: Vec<f64> = env.prints.iter().map(|p| p.x.z).collect();
-    assert!(sides.windows(2).all(|w| (w[0] > 0.0) != (w[1] > 0.0)), "not left and right: {sides:?}");
-    assert!(env.prints.iter().all(|p| (p.x.y - 64.129).abs() < 1e-6));
+    assert!(env.prints.is_empty());
+    let n = env.puffs.len();
+    assert!(n >= 30, "{n} puffs over 6 blocks");
     for i in 60..120 {
         env.footstep(v3(f64::from(i) * 0.1, 64.0, 0.0), -90.0, None);
     }
-    assert_eq!(env.prints.len(), n);
+    assert_eq!(env.puffs.len(), n);
 }
 
 /// The vertices of a cape box as the game would draw it hanging: 10 by 16 by 1 pixels behind a
@@ -1078,4 +1078,101 @@ fn water_is_marked_by_depth_and_shore() {
     assert!(top - low > 1.0, "no swell on the open sea: {}", top - low);
     // The game's clock for the water follows the world's.
     assert!((sway::water_time(24000 * 5 + 600, 0.5) - 600.5 / 20.0).abs() < 1e-3);
+}
+
+#[test]
+fn snow_gives_way_where_walked() {
+    use crate::native_horizon_physics_sway as sway;
+    sway::snow_world(7, 0);
+    sway::snow_clear();
+    std::thread::sleep(std::time::Duration::from_millis(110));
+    let _ = sway::snow_take_dirty();
+    // Snow three layers deep (top 0.375) on y 0, x -6..=1 (x 2 and on is grass), z -6..=6.
+    let top = |x: i32, y: i32, z: i32| -> Option<f64> {
+        (y == 0 && (-6..=1).contains(&x) && (-6..=6).contains(&z)).then_some(0.375)
+    };
+    assert!(sway::snow_press([0.3, 0.375, 0.2], 0.6, [0.0, 1.0], top), "the snow moved");
+    std::thread::sleep(std::time::Duration::from_millis(110));
+    let dirty = sway::snow_take_dirty();
+    assert!(dirty.contains(&(0, 0, 0)) && dirty.contains(&(-1, 0, -1)), "{dirty:?}");
+    let here = sway::snow_in_section(0, 0, 0);
+    let b = here.iter().find(|d| d.0 == [0, 0, 0]).expect("block 0,0,0 pressed");
+    let pts = sway::SNOW_GRID + 1;
+    let at = |d: &sway::SnowDent, i: usize, j: usize| d.depth[i * pts + j];
+    // Under the foot (x 0.25, z 0.25): pressed down, not through the snow.
+    let deep = at(&b.1, 2, 2);
+    assert!(deep > 0.1 && deep < 0.375, "{deep}");
+    // A lip pushed up somewhere around it.
+    let lip = sway::snow_in_section(0, 0, 0).iter().chain(sway::snow_in_section(-1, 0, 0).iter())
+        .chain(sway::snow_in_section(0, 0, -1).iter()).chain(sway::snow_in_section(-1, 0, -1).iter())
+        .flat_map(|d| d.1.depth).fold(0.0f32, f32::min);
+    assert!(lip < -0.005, "{lip}");
+    // The surface stays whole: a point on the edge of two blocks moves alike in both.
+    let west = sway::snow_in_section(-1, 0, 0);
+    let w = west.iter().find(|d| d.0 == [15, 0, 0]).expect("block -1,0,0 pressed");
+    for j in 0..pts {
+        assert!((at(&w.1, sway::SNOW_GRID, j) - at(&b.1, 0, j)).abs() < 1e-6, "edge {j}");
+    }
+    // Next to the grass the snow's edge does not move.
+    assert!(sway::snow_press([1.6, 0.375, 0.5], 0.6, [1.0, 0.0], top));
+    let b1 = sway::snow_in_section(0, 0, 0).into_iter().find(|d| d.0 == [1, 0, 0]).expect("block 1 pressed");
+    for j in 0..pts {
+        assert_eq!(at(&b1.1, sway::SNOW_GRID, j), 0.0, "edge by the grass {j}");
+    }
+    // The pressed top: 64 cells, deepest and darker under the foot, the shading by the slope.
+    let corner = |x: f32, z: f32| sway::SnowCorner { at: [x, z], uv: [x * 32768.0, z * 32768.0], light: 240 | 0 << 8, color: 0xffff_ffff };
+    let quads = sway::snow_top([0.0, 0.375, 0.0], 0.375, &b.1, &[corner(0.0, 0.0), corner(0.0, 1.0), corner(1.0, 1.0), corner(1.0, 0.0)]);
+    assert_eq!(quads.len(), 64 * 4);
+    let low = quads.iter().map(|q| q.0[1]).fold(f32::MAX, f32::min);
+    assert!(low < 0.375 - 0.1 && low > 0.0, "{low}");
+    let darkest = quads.iter().map(|q| q.3 & 255).min().unwrap();
+    assert!(darkest < 230, "{darkest}");
+    assert!(quads.iter().all(|q| q.3 >> 24 == 0xff), "keeps the alpha byte");
+    // Facing up, as the flat top did.
+    for c in quads.chunks(4) {
+        let a = [c[1].0[0] - c[0].0[0], c[1].0[2] - c[0].0[2]];
+        let b = [c[2].0[0] - c[0].0[0], c[2].0[2] - c[0].0[2]];
+        assert!(a[1] * b[0] - a[0] * b[1] > 0.0);
+    }
+    // Forgetting them meshes the blocks again, flat.
+    sway::snow_clear();
+    assert!(sway::snow_in_section(0, 0, 0).is_empty());
+    std::thread::sleep(std::time::Duration::from_millis(110));
+    assert!(!sway::snow_take_dirty().is_empty());
+}
+
+#[test]
+#[ignore]
+fn dump_snow_trail() {
+    use crate::native_horizon_physics_sway as sway;
+    use std::fmt::Write as _;
+    sway::snow_world(9, 0);
+    sway::snow_clear();
+    // A field of full snow blocks: a player walks a bend, a pig crosses it.
+    let top = |x: i32, y: i32, z: i32| -> Option<f64> { (y == 0 && (-8..8).contains(&x) && (-8..8).contains(&z)).then_some(1.0) };
+    let mut prev = [-7.0f64, -5.0];
+    for k in 0..400 {
+        let t = f64::from(k) / 399.0;
+        let p = [-7.0 + 13.0 * t, -5.0 + 9.0 * (t * 2.2).sin() * 0.8];
+        sway::snow_press([p[0], 1.0, p[1]], 0.6, [p[0] - prev[0], p[1] - prev[1]], top);
+        prev = p;
+    }
+    for k in 0..200 {
+        let z = -7.0 + 14.0 * f64::from(k) / 199.0;
+        sway::snow_press([3.0 + 0.3 * (z * 0.7).sin(), 1.0, z], 0.9, [0.0, 1.0], top);
+    }
+    let mut out = String::new();
+    let corner = |x: f32, z: f32| sway::SnowCorner { at: [x, z], uv: [x * 32768.0, z * 32768.0], light: 240, color: 0xffff_ffff };
+    let corners = [corner(0.0, 0.0), corner(0.0, 1.0), corner(1.0, 1.0), corner(1.0, 0.0)];
+    for cx in [-1, 0] {
+        for cz in [-1, 0] {
+            for (p, d) in sway::snow_in_section(cx, 0, cz) {
+                let o = [(cx * 16 + p[0]) as f32, 1.0, (cz * 16 + p[2]) as f32];
+                for q in sway::snow_top(o, 1.0, &d, &corners) {
+                    let _ = writeln!(out, "{} {} {} {}", q.0[0], q.0[1], q.0[2], q.3 & 255);
+                }
+            }
+        }
+    }
+    std::fs::write("/tmp/snow_trail.txt", out).unwrap();
 }

@@ -1,6 +1,6 @@
 [mod]
 id = "horizon_physics"
-version = "0.7.0"
+version = "0.8.0"
 priority = 100
 
 [compatibility]
@@ -218,7 +218,8 @@ name = "native_horizon_physics_sway"
 source = "sway.rs"
 visibility = "pub"
 
-# The water's surface corners get a mark of how open the water is there, for the waves.
+# The water's surface corners get a mark of how open the water is there, for the waves, and
+# snow someone walked through gets its pressed top.
 [[injection]]
 id = "fluid"
 kind = "HEAD"

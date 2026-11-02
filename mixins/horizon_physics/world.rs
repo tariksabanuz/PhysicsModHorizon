@@ -10,6 +10,7 @@ fn horizon_physics_world(game: &crate::game::Game<'_>, camera: glam::DVec3, out:
     hp::set_enabled(on);
     if !on {
         hp::clear();
+        horizon_client_render::native_horizon_physics_sway::snow_clear();
         return;
     }
     let facts = game.res.facts();
@@ -51,17 +52,18 @@ fn horizon_physics_world(game: &crate::game::Game<'_>, camera: glam::DVec3, out:
         }
         hp::scan_found(y, &found);
     }
-    // Footprints: the player on the ground, on snow.
-    if hp::snow_on()
-        && let Some(p) = game.player.as_ref()
+    // Snow: the player and the mobs on it press it down where they walk (the mesher hook draws
+    // the pressed blocks), and each step kicks up a little powder.
     {
-        let feet = p.position;
-        let mut top: Option<f64> = None;
-        if p.ground.on_ground && !p.flying && !p.spectator && !p.swimming {
-            let (x, z) = (feet.x.floor() as i32, feet.z.floor() as i32);
-            for y in [feet.y.floor() as i32, (feet.y - 0.05).floor() as i32] {
+        use horizon_client_render::native_horizon_physics_sway as sway;
+        sway::snow_world(game.dim as u64, game.world.layout().min_y());
+        if !hp::snow_on() {
+            sway::snow_clear();
+        } else {
+            // A block's snow top (its y plus its height), None for a block that is not snow.
+            let top = |x: i32, y: i32, z: i32| -> Option<f64> {
                 let state = game.world.block(x, y, z);
-                let t = match &*facts.get(state).name {
+                match &*facts.get(state).name {
                     "minecraft:snow" => {
                         let layers = game
                             .pack
@@ -75,16 +77,56 @@ fn horizon_physics_world(game: &crate::game::Game<'_>, camera: glam::DVec3, out:
                     }
                     "minecraft:snow_block" | "minecraft:powder_snow" => Some(f64::from(y) + 1.0),
                     _ => None,
-                };
-                if let Some(t) = t
-                    && (t - feet.y).abs() < 0.14
-                {
-                    top = Some(t);
-                    break;
+                }
+            };
+            // The snow under feet at (x, y, z): its top, when the feet are on it or sunk into it.
+            let under = |x: f64, y: f64, z: f64| -> Option<f64> {
+                let (bx, bz) = (x.floor() as i32, z.floor() as i32);
+                for by in [y.floor() as i32, (y - 0.05).floor() as i32, y.floor() as i32 - 1] {
+                    if let Some(t) = top(bx, by, bz)
+                        && t - y < 0.2
+                        && y - t < 0.14
+                    {
+                        return Some(t);
+                    }
+                }
+                None
+            };
+            let mut player_top: Option<f64> = None;
+            if let Some(p) = game.player.as_ref()
+                && p.ground.on_ground
+                && !p.flying
+                && !p.spectator
+                && !p.swimming
+            {
+                let feet = p.position;
+                player_top = under(feet.x, feet.y, feet.z);
+                if let Some(t) = player_top {
+                    let dir = [p.velocity.x, p.velocity.z];
+                    let yaw = f64::from(p.yaw).to_radians();
+                    let dir = if dir[0].abs() + dir[1].abs() > 1e-4 { dir } else { [-yaw.sin(), yaw.cos()] };
+                    sway::snow_press([feet.x, t, feet.z], 0.6, dir, top);
+                }
+            }
+            if let Some(p) = game.player.as_ref() {
+                hp::footstep([p.position.x, p.position.y, p.position.z], p.yaw, player_top);
+            }
+            for m in &game.mobs {
+                if !m.on_ground || m.health <= 0.0 {
+                    continue;
+                }
+                let at = m.position;
+                if (at.x - camera.x).abs() > 48.0 || (at.z - camera.z).abs() > 48.0 {
+                    continue;
+                }
+                if let Some(t) = under(at.x, at.y, at.z) {
+                    let dir = [at.x - m.previous.x, at.z - m.previous.z];
+                    let yaw = f64::from(m.yaw).to_radians();
+                    let dir = if dir[0].abs() + dir[1].abs() > 1e-4 { dir } else { [-yaw.sin(), yaw.cos()] };
+                    sway::snow_press([at.x, t, at.z], m.kind.width.clamp(0.3, 1.6), dir, top);
                 }
             }
         }
-        hp::footstep([feet.x, feet.y, feet.z], p.yaw, top);
     }
     // Splashes: the player's feet going into water fast.
     if hp::liquids_on()

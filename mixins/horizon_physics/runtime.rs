@@ -19,7 +19,7 @@ use crate::mesher::Vertex;
 
 pub const ID: &str = "horizon_physics";
 pub const NAME: &str = "Horizon Physics";
-pub const VERSION: &str = "0.7.0";
+pub const VERSION: &str = "0.8.0";
 pub const DESCRIPTION: &str =
     "By tariksabanuz. Blocks crumble and blow apart, ragdolls, items, smoke, ropes, capes, liquids, waves and swaying plants.";
 
@@ -2604,7 +2604,7 @@ impl Env {
         let r = yaw.to_radians();
         let (s, c) = r.sin_cos();
         let side = v3(c, 0.0, s) * if self.left { -0.13 } else { 0.13 };
-        self.prints.push(Print { x: here + side + v3(0.0, 0.004, 0.0), yaw: r, age: 0.0 });
+        // The print itself is the snow pressed down (the renderer's snow); here only the powder.
         // A little powder kicked up by the step.
         let fwd = v3(-s, 0.0, c);
         for _ in 0..4 {
