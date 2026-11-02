@@ -14,5 +14,8 @@ pub mod mesher {
 pub mod native_horizon_physics {
     include!("../mixins/horizon_physics/runtime.rs");
 }
+pub mod native_horizon_physics_sway {
+    include!("../mixins/horizon_physics/sway.rs");
+}
 #[cfg(test)]
 mod tests;

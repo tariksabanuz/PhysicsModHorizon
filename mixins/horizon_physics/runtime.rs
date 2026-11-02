@@ -19,9 +19,9 @@ use crate::mesher::Vertex;
 
 pub const ID: &str = "horizon_physics";
 pub const NAME: &str = "Horizon Physics";
-pub const VERSION: &str = "0.2.0";
+pub const VERSION: &str = "0.3.0";
 pub const DESCRIPTION: &str =
-    "Blocks crumble and blow apart, ragdolls, item physics, smoke, footprints, ropes and capes.";
+    "Blocks crumble and blow apart, ragdolls, items, smoke, ropes, capes, liquids, waves and swaying plants.";
 
 // ---------------------------------------------------------------------------------------------
 // Settings
@@ -43,6 +43,12 @@ pub struct Settings {
     pub ropes: bool,
     /// Capes as cloth.
     pub capes: bool,
+    /// Water that waves (needs a Horizon shader pack).
+    pub waves: bool,
+    /// Leaves, plants, vines and seagrass that sway (needs a Horizon shader pack).
+    pub plants: bool,
+    /// Placed water and lava splash as droplets; splashes when you fall in (beta).
+    pub liquids: bool,
     /// 0 calm, 1 breeze, 2 strong.
     pub wind: u8,
     /// 0 Earth, 1 Moon, 2 Mars, 3 Pluto, 4 zero.
@@ -64,6 +70,9 @@ impl Default for Settings {
             snow: true,
             ropes: true,
             capes: true,
+            waves: true,
+            plants: true,
+            liquids: true,
             wind: 1,
             gravity: 0,
             pieces: 1,
@@ -97,6 +106,9 @@ impl Settings {
             format!("Snow footprints: {}", on_off(self.snow)),
             format!("Leads and fishing lines: {}", on_off(self.ropes)),
             format!("Cloth capes: {}", on_off(self.capes)),
+            format!("Water waves (shader pack): {}", on_off(self.waves)),
+            format!("Swaying plants (shader pack): {}", on_off(self.plants)),
+            format!("Liquids (beta): {}", on_off(self.liquids)),
             format!("Wind: {}", WIND[self.wind as usize % 3].0),
             format!("Gravity: {}", GRAVITY[self.gravity as usize % 5].0),
             format!("Pieces per block: {}", PIECES[self.pieces as usize % 3].0),
@@ -116,11 +128,14 @@ impl Settings {
             5 => self.snow = !self.snow,
             6 => self.ropes = !self.ropes,
             7 => self.capes = !self.capes,
-            8 => self.wind = (self.wind + 1) % 3,
-            9 => self.gravity = (self.gravity + 1) % 5,
-            10 => self.pieces = (self.pieces + 1) % 3,
-            11 => self.lifetime = (self.lifetime + 1) % 4,
-            12 => return true,
+            8 => self.waves = !self.waves,
+            9 => self.plants = !self.plants,
+            10 => self.liquids = !self.liquids,
+            11 => self.wind = (self.wind + 1) % 3,
+            12 => self.gravity = (self.gravity + 1) % 5,
+            13 => self.pieces = (self.pieces + 1) % 3,
+            14 => self.lifetime = (self.lifetime + 1) % 4,
+            15 => return true,
             _ => {}
         }
         false
@@ -128,7 +143,7 @@ impl Settings {
 
     pub fn to_text(&self) -> String {
         format!(
-            "blocks={}\ndeaths={}\nitems={}\nexplosions={}\nsmoke={}\nsnow={}\nropes={}\ncapes={}\nwind={}\ngravity={}\npieces={}\nlifetime={}\n",
+            "blocks={}\ndeaths={}\nitems={}\nexplosions={}\nsmoke={}\nsnow={}\nropes={}\ncapes={}\nwaves={}\nplants={}\nliquids={}\nwind={}\ngravity={}\npieces={}\nlifetime={}\n",
             self.blocks as u8,
             self.deaths,
             self.items as u8,
@@ -137,6 +152,9 @@ impl Settings {
             self.snow as u8,
             self.ropes as u8,
             self.capes as u8,
+            self.waves as u8,
+            self.plants as u8,
+            self.liquids as u8,
             self.wind,
             self.gravity,
             self.pieces,
@@ -158,6 +176,9 @@ impl Settings {
                 "snow" => s.snow = n != 0,
                 "ropes" => s.ropes = n != 0,
                 "capes" => s.capes = n != 0,
+                "waves" => s.waves = n != 0,
+                "plants" => s.plants = n != 0,
+                "liquids" => s.liquids = n != 0,
                 "wind" => s.wind = n % 3,
                 "gravity" => s.gravity = n % 5,
                 "pieces" => s.pieces = n % 3,
@@ -1919,6 +1940,10 @@ pub struct Env {
     pending: Vec<(Blast, Vec<Aired>)>,
     frame: u64,
     camera: V3,
+    /// Liquid droplets.
+    pub drops: Vec<Drop>,
+    /// Whether the player's feet were in water last frame.
+    was_in_water: bool,
 }
 
 impl Default for Env {
@@ -1939,6 +1964,8 @@ impl Default for Env {
             pending: Vec::new(),
             frame: 0,
             camera: V3::default(),
+            drops: Vec::new(),
+            was_in_water: false,
         }
     }
 }
@@ -1954,6 +1981,7 @@ impl Env {
         self.ropes.clear();
         self.capes.clear();
         self.pending.clear();
+        self.drops.clear();
     }
 
     fn puff(&mut self, p: Puff) {
@@ -2108,6 +2136,7 @@ impl Env {
             }
             i += 1;
         }
+        self.step_drops(dt, g, world);
         // The footprints fade; the ropes and capes nobody draws any more are forgotten.
         let life = 30.0;
         self.prints.retain_mut(|p| {
@@ -2147,6 +2176,21 @@ impl Env {
                 _ => (GLOW, false),
             };
             cube(p.x - camera, half, spin, white, color, light, shaded, out);
+        }
+        for d in &self.drops {
+            let t = (d.age / d.life).clamp(0.0, 1.0);
+            let half = d.size * ((1.0 - t) / 0.3).min(1.0);
+            if half <= 0.004 {
+                continue;
+            }
+            if d.lava {
+                let c = abgr(mix3([1.0, 0.62, 0.15], [0.75, 0.2, 0.02], t));
+                cube(d.x - camera, half, Quat::IDENTITY, white, c, GLOW, false, out);
+            } else {
+                let light = world.light(floor(d.x.x), floor(d.x.y), floor(d.x.z));
+                let c = abgr([0.24 + d.shade * 0.1, 0.42 + d.shade * 0.1, 0.86 + d.shade * 0.08]);
+                cube(d.x - camera, half, Quat::IDENTITY, white, c, light, true, out);
+            }
         }
         for f in &self.prints {
             let t = (f.age / 30.0).clamp(0.0, 1.0);
@@ -2707,4 +2751,162 @@ fn link(pts: &mut [V3], a: usize, b: usize, len: f64, a_pinned: bool, b_pinned: 
     let corr = d * ((l - len) / l * k);
     pts[a] = pts[a] + corr * (wa / sum);
     pts[b] = pts[b] - corr * (wb / sum);
+}
+
+
+// --- Liquids (beta) -------------------------------------------------------------------------
+
+/// A drop of water or lava: a tiny sphere that falls, flows over blocks and keeps a little apart
+/// from the others (position-based fluid, much simplified).
+#[derive(Clone, Copy, Debug)]
+pub struct Drop {
+    pub x: V3,
+    pub v: V3,
+    pub age: f64,
+    pub life: f64,
+    pub size: f64,
+    pub lava: bool,
+    shade: f64,
+}
+
+const MAX_DROPS: usize = 1200;
+/// How close two drops may come.
+const DROP_GAP: f64 = 0.12;
+
+impl Env {
+    fn add_drop(&mut self, x: V3, v: V3, lava: bool, life: f64) {
+        if self.drops.len() >= MAX_DROPS {
+            self.drops.remove(0);
+        }
+        let size = self.rng.range(0.035, 0.06);
+        let shade = self.rng.next();
+        self.drops.push(Drop { x, v, age: 0.0, life, size, lava, shade });
+    }
+
+    /// Water or lava was poured into the block at `pos`: a blob of it spills out over the block
+    /// and its neighbours before it settles into the block.
+    pub fn pour(&mut self, pos: [i32; 3], lava: bool) {
+        let c = v3(f64::from(pos[0]) + 0.5, f64::from(pos[1]) + 0.75, f64::from(pos[2]) + 0.5);
+        let n = if lava { 40 } else { 70 };
+        for _ in 0..n {
+            let d = self.rng.unit();
+            let x = c + v3(d.x * 0.3, d.y.abs() * 0.2, d.z * 0.3);
+            let v = v3(d.x * self.rng.range(0.4, 1.5), self.rng.range(-0.5, 1.0), d.z * self.rng.range(0.4, 1.5));
+            let life = self.rng.range(1.6, 3.2) * if lava { 1.4 } else { 1.0 };
+            self.add_drop(x, v, lava, life);
+        }
+    }
+
+    /// Something fell into water at `at` with downward `speed` (blocks a second): a splash.
+    pub fn splash(&mut self, at: V3, speed: f64) {
+        let n = (12.0 + speed * 18.0).min(80.0) as usize;
+        for _ in 0..n {
+            let a = self.rng.range(0.0, std::f64::consts::TAU);
+            let r = self.rng.range(0.2, 0.55);
+            let x = at + v3(a.cos() * r, 0.05, a.sin() * r);
+            let up = self.rng.range(2.0, 3.5) * (0.5 + speed * 0.12).min(1.4);
+            let v = v3(a.cos() * self.rng.range(0.8, 2.0), up, a.sin() * self.rng.range(0.8, 2.0));
+            let life = self.rng.range(1.0, 1.8);
+            self.add_drop(x, v, false, life);
+        }
+    }
+
+    /// The player's feet this frame: in water or not, and how fast they move down.
+    pub fn player_in_water(&mut self, feet: V3, in_water: bool, down: f64) {
+        if in_water && !self.was_in_water && down > 3.0 {
+            self.splash(v3(feet.x, feet.y.floor() + 0.9, feet.z), down);
+        }
+        self.was_in_water = in_water;
+    }
+
+    fn step_drops(&mut self, dt: f64, g: f64, world: &dyn World) {
+        if self.drops.is_empty() || dt <= 0.0 {
+            return;
+        }
+        let steps = 2;
+        let h = dt.min(0.05) / steps as f64;
+        for _ in 0..steps {
+            let mut prev: Vec<V3> = Vec::with_capacity(self.drops.len());
+            for d in &mut self.drops {
+                prev.push(d.x);
+                d.v.y -= g * h;
+                d.x = d.x + d.v * h;
+            }
+            // Keep apart: a grid of cells one gap wide, each drop against its neighbours.
+            let cell = |p: V3| ((p.x / DROP_GAP).floor() as i64, (p.y / DROP_GAP).floor() as i64, (p.z / DROP_GAP).floor() as i64);
+            let mut grid: HashMap<(i64, i64, i64), Vec<usize>> = HashMap::new();
+            for (i, d) in self.drops.iter().enumerate() {
+                grid.entry(cell(d.x)).or_default().push(i);
+            }
+            let mut push = vec![V3::default(); self.drops.len()];
+            for (i, d) in self.drops.iter().enumerate() {
+                let (cx, cy, cz) = cell(d.x);
+                for dx in -1..=1 {
+                    for dy in -1..=1 {
+                        for dz in -1..=1 {
+                            let Some(list) = grid.get(&(cx + dx, cy + dy, cz + dz)) else { continue };
+                            for &j in list {
+                                if j <= i {
+                                    continue;
+                                }
+                                let e = self.drops[j].x - d.x;
+                                let l = e.len();
+                                if l >= DROP_GAP || l < 1e-9 {
+                                    continue;
+                                }
+                                let corr = e * ((DROP_GAP - l) / l * 0.5 * 0.5);
+                                push[i] = push[i] - corr;
+                                push[j] = push[j] + corr;
+                            }
+                        }
+                    }
+                }
+            }
+            for (k, d) in self.drops.iter_mut().enumerate() {
+                d.x = d.x + push[k];
+                let mut p = prev[k];
+                let before = d.x;
+                push_out(world, &mut d.x, &mut p);
+                let touched = (d.x - before).len() > 1e-9;
+                d.v = (d.x - prev[k]) * (1.0 / h);
+                if touched {
+                    // Water runs on along the ground; it barely bounces.
+                    d.v = v3(d.v.x * 0.94, d.v.y.max(0.0) * 0.1, d.v.z * 0.94);
+                }
+            }
+        }
+        let mut i = 0;
+        while i < self.drops.len() {
+            let d = &mut self.drops[i];
+            d.age += dt;
+            // A drop that reaches standing water joins it (after its first moment: the block it
+            // was poured into is water itself).
+            let joined = d.age > 0.5 && !d.lava && matches!(world.cell(floor(d.x.x), floor(d.x.y), floor(d.x.z)), Cell::Fluid);
+            if d.age >= d.life || joined || d.x.y < -100.0 {
+                self.drops.swap_remove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+}
+
+pub fn liquids_on() -> bool {
+    part_on(|s| s.liquids)
+}
+
+/// Water (or lava) was placed at `pos`.
+pub fn pour(pos: [i32; 3], lava: bool) {
+    if !liquids_on() {
+        return;
+    }
+    with(|s| s.env.pour(pos, lava));
+}
+
+/// The player's feet: in water or not, and their speed down (blocks a second).
+pub fn player_water(feet: [f64; 3], in_water: bool, down: f64) {
+    if !liquids_on() {
+        return;
+    }
+    with(|s| s.env.player_in_water(v3(feet[0], feet[1], feet[2]), in_water, down));
 }

@@ -50,3 +50,4 @@ def render(frames, c, out, grid):
     sheet.save(out.replace('.gif', '.png').replace('prev_', 'sheet_'))
 render(data[0], cam((-8.5, 70.5, -5.0), (0.5, 64.8, 4.5)), 'prev_explosion.gif', (-8, 10, -6, 14))
 render(data[1], cam((-0.5, 66.3, -0.8), (1.6, 65.0, 3.6)), 'prev_cape_lead.gif', (-6, 8, -2, 10))
+render(data[2], cam((-3.0, 68.0, -2.0), (0.8, 64.2, 4.5)), 'prev_liquids.gif', (-8, 10, -4, 14))

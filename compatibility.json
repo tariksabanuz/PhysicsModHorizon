@@ -10,7 +10,10 @@
     "crates/horizon-client/src/game/lan_particles.rs": "d8198c78682e52887edb8d1858bca768d0d002846d39cf2dcca35142e9419a69",
     "crates/horizon-client/src/game/remote.rs": "3d15b210ffe03ad5721c3c83cca2bfae651ac4e5c962558810d77deb8a474123",
     "crates/horizon-client/src/game/leads.rs": "e397023afb0547d8d996b350357bae431b583ed2139eeebdc0795314eca4ddd8",
-    "crates/horizon-client/src/game/fishing.rs": "55c66857078564d1bac7bb37b6f46d6825daad87e1e5226a64e9073fb92c1c81"
+    "crates/horizon-client/src/game/fishing.rs": "55c66857078564d1bac7bb37b6f46d6825daad87e1e5226a64e9073fb92c1c81",
+    "crates/horizon-client-render/src/lib.rs": "6953bb1572ba8986ef05544ec8b1c47743df4e087afc08989a51efff4846ff66",
+    "crates/horizon-client-render/src/gfx/native_material.rs": "6769e49d40b4aa96d9571d9d4a9c31c5c25764310fe49cc600a92e9450dcbab5",
+    "crates/horizon-client/src/game/native_shaders.rs": "eac4fdd28afb504c97536ef9315b564d93f28273c5b72c60d6bd67cbcbd51bdc"
   },
   "horizon_repository": "https://github.com/horizon-rust/horizon",
   "horizon_mixins_repository": "https://github.com/horizon-rust/horizon-mixins",

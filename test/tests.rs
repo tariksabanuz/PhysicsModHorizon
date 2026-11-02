@@ -241,18 +241,19 @@ fn pieces_sink_slowly_in_water() {
 fn settings_round_trip_and_cycle() {
     let mut s = Settings::default();
     s.click(1);
-    s.click(9);
+    s.click(12);
     s.click(0);
     s.click(4);
-    s.click(8);
+    s.click(11);
+    s.click(10);
     let t = Settings::from_text(&s.to_text());
     assert_eq!(s, t);
-    assert_eq!(t.labels().len(), 13);
+    assert_eq!(t.labels().len(), 16);
     assert!(t.labels()[1].ends_with("Fall apart"));
     assert!(t.labels()[4].ends_with("Off"));
-    assert!(t.labels()[8].ends_with("Strong"));
-    assert!(!t.smoke && t.explosions);
-    assert!(s.click(12));
+    assert!(t.labels()[11].ends_with("Strong"));
+    assert!(!t.smoke && t.explosions && !t.liquids && t.waves && t.plants);
+    assert!(s.click(15));
 }
 
 #[test]
@@ -704,6 +705,37 @@ fn dump_v2() {
         scenes.push(format!("[{}]", frames.join(",")));
         clear();
     }
+    // 3. Water poured onto the ground, lava next to it, then a splash.
+    {
+        let mut env = Env::default();
+        let st = Settings::default();
+        let mut frames = Vec::new();
+        for f in 0..120 {
+            if f == 5 {
+                env.pour([0, 64, 3], false);
+            }
+            if f == 30 {
+                env.pour([3, 64, 5], true);
+            }
+            if f == 60 {
+                env.splash(v3(-2.5, 64.0, 5.5), 12.0);
+            }
+            let mut polys: Vec<(Vec<V3>, [u8; 3])> = Vec::new();
+            for d in &env.drops {
+                let t = (d.age / d.life).clamp(0.0, 1.0);
+                let half = d.size * ((1.0 - t) / 0.3).min(1.0);
+                let c = if d.lava { [255, 140, 30] } else { [60, 110, 220] };
+                for q in box_faces(corners(d.x, Quat::IDENTITY, v3(half, half, half))) {
+                    polys.push((q.to_vec(), c));
+                }
+            }
+            frames.push(poly_json(&polys));
+            for _ in 0..2 {
+                env.step(1.0 / 60.0, v3(0.0, 66.0, 0.0), f, &st, &w);
+            }
+        }
+        scenes.push(format!("[{}]", frames.join(",")));
+    }
     std::fs::write("/tmp/hp_dump2.json", format!("[{}]", scenes.join(","))).unwrap();
 }
 
@@ -740,4 +772,87 @@ fn a_turning_cape_keeps_hanging() {
         }
         assert!(low < 64.6, "yaw {yaw0}, turning {rate}: the cape is lifted to {low}");
     }
+}
+
+// --- 0.3.0 ----------------------------------------------------------------------------------
+
+#[test]
+fn poured_water_spreads_settles_and_goes() {
+    let w = Flat { pillar: None, water_above: false };
+    let mut env = Env::default();
+    let st = Settings::default();
+    env.pour([0, 64, 0], false);
+    let n = env.drops.len();
+    assert!(n >= 50);
+    for f in 0..60 {
+        env.step(1.0 / 60.0, v3(0.0, 66.0, 0.0), f, &st, &w);
+    }
+    // On the floor, spread wider than the block, never through it.
+    assert!(env.drops.iter().all(|d| d.x.y > 63.99), "a drop went through the floor");
+    let wide = env.drops.iter().map(|d| (d.x.x - 0.5).abs().max((d.x.z - 0.5).abs())).fold(0.0, f64::max);
+    assert!(wide > 0.7, "the water did not spread: {wide}");
+    // Not piled up in one place: the drops keep apart.
+    let mut close = 0;
+    for i in 0..env.drops.len() {
+        for j in i + 1..env.drops.len() {
+            if (env.drops[i].x - env.drops[j].x).len() < DROP_GAP_TEST * 0.5 {
+                close += 1;
+            }
+        }
+    }
+    assert!(close < env.drops.len() / 4, "{close} pairs on top of each other");
+    for f in 60..400 {
+        env.step(1.0 / 60.0, v3(0.0, 66.0, 0.0), f, &st, &w);
+    }
+    assert!(env.drops.is_empty());
+}
+
+const DROP_GAP_TEST: f64 = 0.12;
+
+#[test]
+fn falling_into_water_splashes_once() {
+    let mut env = Env::default();
+    env.player_in_water(v3(0.5, 65.0, 0.5), false, 10.0);
+    env.player_in_water(v3(0.5, 64.8, 0.5), true, 10.0);
+    let n = env.drops.len();
+    assert!(n > 20);
+    assert!(env.drops.iter().all(|d| d.v.y > 0.0));
+    env.player_in_water(v3(0.5, 64.6, 0.5), true, 10.0);
+    assert_eq!(env.drops.len(), n, "only on going in");
+    let mut env = Env::default();
+    env.player_in_water(v3(0.5, 65.0, 0.5), false, 1.0);
+    env.player_in_water(v3(0.5, 64.8, 0.5), true, 1.0);
+    assert!(env.drops.is_empty(), "walking in makes no splash");
+}
+
+#[test]
+fn sway_table_and_shader() {
+    use crate::native_horizon_physics_sway as sway;
+    assert_eq!(sway::kind("minecraft:block/oak_leaves"), sway::LEAVES);
+    assert_eq!(sway::kind("minecraft:block/short_grass"), sway::PLANT);
+    assert_eq!(sway::kind("minecraft:block/tall_grass_top"), sway::PLANT_TOP);
+    assert_eq!(sway::kind("minecraft:block/tall_grass_bottom"), sway::PLANT);
+    assert_eq!(sway::kind("minecraft:block/water_still"), sway::WATER);
+    assert_eq!(sway::kind("minecraft:block/kelp_plant"), sway::KELP);
+    assert_eq!(sway::kind("minecraft:block/vine"), sway::VINES);
+    assert_eq!(sway::kind("minecraft:block/grass_block_top"), 0);
+    assert_eq!(sway::kind("minecraft:block/stone"), 0);
+    let names = vec![("minecraft:block/oak_leaves", 7u32), ("minecraft:block/water_still", 3), ("minecraft:block/stone", 1), ("minecraft:block/short_grass", 9)];
+    assert!(sway::set(1, || names.clone(), true, true, 1.0));
+    assert!(!sway::set(1, || names.clone(), true, true, 1.0), "nothing changed");
+    assert!(sway::set(1, || names.clone(), true, false, 1.0), "a setting changed");
+    let s = sway::current().unwrap();
+    assert_eq!(s.layers, vec![(3, sway::WATER), (7, sway::LEAVES), (9, sway::PLANT)]);
+    let w = sway::wgsl(&s).unwrap();
+    assert!(w.contains("case 3u: { return 5u; }"));
+    assert!(!w.contains("7u: { return 1u"), "plants are off");
+    let entries = "fn horizon_material_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32) {\n    let pos = position + origin;\n}";
+    let p = sway::patch(entries).unwrap();
+    assert!(p.contains("horizon_physics_sway(position + origin, uv, layer)"));
+    assert!(sway::patch("no anchor here").is_none());
+    sway::set(1, || names.clone(), false, false, 1.0);
+    assert!(sway::patch(entries).is_none(), "all off: the game's own shader");
+    // For the WGSL check outside the tests.
+    sway::set(1, || names.clone(), true, true, 2.4);
+    std::fs::write("/tmp/hp_sway.wgsl", sway::wgsl(&sway::current().unwrap()).unwrap()).unwrap();
 }

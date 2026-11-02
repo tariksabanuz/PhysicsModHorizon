@@ -86,6 +86,16 @@ fn horizon_physics_world(game: &crate::game::Game<'_>, camera: glam::DVec3, out:
         }
         hp::footstep([feet.x, feet.y, feet.z], p.yaw, top);
     }
+    // Splashes: the player's feet going into water fast.
+    if hp::liquids_on()
+        && let Some(p) = game.player.as_ref()
+    {
+        let feet = p.position;
+        let state = game.world.block(feet.x.floor() as i32, (feet.y + 0.1).floor() as i32, feet.z.floor() as i32);
+        let wet = facts.get(state).fluid == horizon_client::blocks::Fluid::Water;
+        // Velocity is in blocks a tick.
+        hp::player_water([feet.x, feet.y, feet.z], wet, -p.velocity.y * 20.0);
+    }
     let cell = |x: i32, y: i32, z: i32| -> hp::Cell {
         let state = game.world.block(x, y, z);
         if game.world.is_air(state) {

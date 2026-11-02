@@ -18,13 +18,22 @@ brings PhysicsMod-style physics to the client, written from scratch:
 - **Snow footprints**: walking on snow leaves footprints, left and right, that fade after 30 seconds.
 - **Ropes**: leads and fishing lines sag, swing and lie on the blocks.
 - **Cloth capes**: capes are cloth that trails, flutters in the wind and hangs down when you stand.
-- **Wind**: calm, a breeze or strong, for smoke, capes and ropes.
+- **Water waves and swaying plants** (with a Horizon shader pack, such as Aurelia): the water's
+  surface moves in waves; leaves, grass, flowers, crops, tall plants, vines, seagrass and kelp sway,
+  more in wind, rain and thunder. Lava moves slowly too.
+- **Liquids (beta)**: water or lava you pour splashes out as droplets that run over the blocks before
+  they settle; falling into water splashes.
+- **Wind**: calm, a breeze or strong, for smoke, capes, ropes and the swaying.
 - **Gravity**: Earth, Moon, Mars, Pluto or none, for the pieces.
 
 Settings: Options > Mods > Horizon Physics (saved in `config/horizon_physics.txt`).
 
-Not included: waves, liquid simulation and waving plants. Those need a change to how the world itself
-is drawn; Horizon's shader packs have no vertex stage, and the terrain is meshed once per chunk.
+How the waves and swaying work: Horizon meshes terrain once per chunk, and its shader packs have no
+vertex stage. When a Horizon shader pack runs, the mod adds a vertex displacement to the terrain shader
+the game builds around the pack, with a table of which atlas sprites are water, leaves or plants. If
+that shader does not parse, the pack keeps the game's own one. Without a Horizon shader pack (vanilla
+look, or an OptiFine-style `shaders/` pack) nothing waves or sways. Changing these settings rebuilds the
+pack (the chat says "Shader pack ... reloaded").
 
 All of it is client-side decoration: nothing changes in the world or for other players. The pieces are
 simulated with a small rigid-body solver (position-based dynamics) against the blocks around them.

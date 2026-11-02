@@ -2,6 +2,7 @@
 // (Horizon 9d979caa). Each helper sits in its target's module, as horizon-mixins puts it.
 #![allow(dead_code, unused_variables, clippy::all)]
 extern crate self as horizon_client;
+extern crate self as horizon_client_render;
 
 pub mod mesher {
     #[repr(C)]
@@ -19,6 +20,26 @@ pub mod mesher {
 
 pub mod native_horizon_physics {
     //RUNTIME//
+}
+
+pub mod native_horizon_physics_sway {
+    //SWAY_MODULE//
+}
+
+pub mod gfx {
+    pub fn outline_width(width: u32) -> f32 { 2.5 }
+    pub mod native_material {
+        const ENTRIES: &str = "";
+        fn vanilla_terrain() -> String { String::new() }
+        fn shader_source(source: &str) -> String {
+            //SHADER//
+            match __h_shader(source) {
+                ::core::ops::ControlFlow::Break(v) => return v,
+                ::core::ops::ControlFlow::Continue(()) => {}
+            }
+            format!("{source}{}{ENTRIES}", vanilla_terrain())
+        }
+    }
 }
 
 pub mod blocks {
@@ -119,9 +140,6 @@ pub mod mobs {
 pub mod gizmos {
     pub struct Line { pub start: [f64; 3], pub end: [f64; 3], pub color: u32, pub width: f32 }
 }
-pub mod gfx {
-    pub fn outline_width(width: u32) -> f32 { 2.5 }
-}
 pub mod hud {
     #[derive(Clone, Copy, Debug)]
     pub struct Rect { pub u0: f32, pub v0: f32, pub u1: f32, pub v1: f32, pub w: u32, pub h: u32 }
@@ -157,6 +175,7 @@ pub mod game {
     pub struct PlayerMotion {
         pub swimming: bool,
         pub position: crate::geometry::Vec3,
+        pub velocity: crate::geometry::Vec3,
         pub ground: GroundState,
         pub yaw: f32,
         pub spectator: bool,
@@ -182,7 +201,8 @@ pub mod game {
     }
     pub struct ItemRenderer;
     impl ItemRenderer { pub fn item_id(&self, item: &str) -> i32 { 0 } }
-    pub struct PackResources { pub item_renderer: ItemRenderer, assets: std::sync::Arc<Assets> }
+    pub struct RenderAssets { pub sprite_layers: std::collections::BTreeMap<String, u32> }
+    pub struct PackResources { pub item_renderer: ItemRenderer, assets: std::sync::Arc<Assets>, render: std::sync::Arc<RenderAssets> }
     pub struct Game<'a> {
         res: std::sync::Arc<Resources>,
         gui: UiResources,
@@ -192,6 +212,7 @@ pub mod game {
         pickups: pickups::Pickups,
         pack: PackResources,
         player: Option<PlayerMotion>,
+        native_shaders: native_shaders::NativeShaders,
         _l: std::marker::PhantomData<&'a ()>,
     }
     impl Game<'_> {
@@ -267,6 +288,17 @@ pub mod game {
             pub(super) fn remote_explode(&mut self, p: &play::Explode) {
                 //EXPLODE//
                 __h_explode(&mut *self, p);
+            }
+        }
+    }
+    pub mod native_shaders {
+        use super::Game;
+        #[derive(Default)]
+        pub(super) struct NativeShaders { pub picked: String, stamp: Option<u64>, looked: Option<std::time::Instant> }
+        impl Game<'_> {
+            pub(super) fn tick_native_shader_pack(&mut self, path: &std::path::Path) {
+                //SHADER_PACK//
+                __h_shader_pack(&mut *self);
             }
         }
     }

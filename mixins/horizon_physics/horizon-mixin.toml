@@ -1,6 +1,6 @@
 [mod]
 id = "horizon_physics"
-version = "0.2.0"
+version = "0.3.0"
 priority = 100
 
 [compatibility]
@@ -178,3 +178,29 @@ bindings = [
   { name = "data", ty = "&MobData", value = "data" },
   { name = "out", ty = "&mut Vec<Vertex>", value = "&mut *out" },
 ]
+
+# In the renderer: the waves and sway, beside the renderer's own code.
+[[module]]
+id = "sway"
+file = "crates/horizon-client-render/src/lib.rs"
+name = "native_horizon_physics_sway"
+source = "sway.rs"
+visibility = "pub"
+
+# A Horizon shader pack's terrain shader, with the waves and sway.
+[[injection]]
+id = "shader"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client_render::gfx::native_material::shader_source"
+helper = "shader.rs"
+bindings = [{ name = "source", ty = "&str", value = "source" }]
+
+# Before the game checks its Horizon shader pack: hand the renderer the sprite layers and settings,
+# and build the pack again when they changed.
+[[injection]]
+id = "shader-pack"
+kind = "HEAD"
+target = "horizon_client::game::native_shaders::Game<'_>::tick_native_shader_pack"
+helper = "shader_pack.rs"
+bindings = [{ name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" }]
