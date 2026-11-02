@@ -1,6 +1,6 @@
 [mod]
 id = "horizon_physics"
-version = "0.6.3"
+version = "0.6.4"
 priority = 100
 
 [compatibility]
@@ -150,19 +150,6 @@ bindings = [
 ]
 
 # Boats ride the waves.
-[[injection]]
-id = "boats"
-kind = "HEAD"
-cancellable = true
-target = "horizon_client::game::boats::Game<'_>::boat_geometry"
-helper = "boats.rs"
-bindings = [
-  { name = "game", ty = "&crate::game::Game<'_>", value = "self" },
-  { name = "camera", ty = "glam::DVec3", value = "camera" },
-  { name = "alpha", ty = "f64", value = "alpha" },
-  { name = "out", ty = "&mut Vec<Vertex>", value = "&mut *out" },
-]
-
 # FishingHookRenderer's line as a rope.
 [[injection]]
 id = "fishing"
@@ -219,20 +206,6 @@ source = "sway.rs"
 visibility = "pub"
 
 # The water's surface corners get a mark of how open the water is there, for the waves.
-[[injection]]
-id = "fluid"
-kind = "HEAD"
-cancellable = true
-target = "horizon_client_render::mesher::Mesher<'_>::mesh_reusing"
-helper = "fluid.rs"
-bindings = [
-  { name = "mesher", ty = "&mut Mesher<'_>", value = "&mut *self" },
-  { name = "region", ty = "&[[Option<&Chunk>; 3]; 3]", value = "region" },
-  { name = "sy", ty = "i32", value = "sy" },
-  { name = "out", ty = "&mut SectionMesh", value = "&mut out" },
-  { name = "scratch", ty = "&mut MeshScratch", value = "&mut *scratch" },
-]
-
 # A Horizon shader pack's terrain shader, with the waves and sway.
 [[injection]]
 id = "shader"
