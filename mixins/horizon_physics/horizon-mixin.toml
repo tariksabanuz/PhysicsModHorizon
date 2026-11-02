@@ -1,6 +1,6 @@
 [mod]
 id = "horizon_physics"
-version = "0.6.5"
+version = "0.6.6"
 priority = 100
 
 [compatibility]
@@ -207,29 +207,7 @@ visibility = "pub"
 
 # The water's surface corners get a mark of how open the water is there, for the waves.
 # The water's surface corners get a mark of how open the water is there, for the waves.
-[[injection]]
-id = "fluid"
-kind = "HEAD"
-cancellable = true
-target = "horizon_client_render::mesher::Mesher<'_>::mesh_reusing"
-helper = "fluid.rs"
-bindings = [
-  { name = "mesher", ty = "&mut Mesher<'_>", value = "&mut *self" },
-  { name = "region", ty = "&[[Option<&Chunk>; 3]; 3]", value = "region" },
-  { name = "sy", ty = "i32", value = "sy" },
-  { name = "out", ty = "&mut SectionMesh", value = "&mut out" },
-  { name = "scratch", ty = "&mut MeshScratch", value = "&mut *scratch" },
-]
-
 # A Horizon shader pack's terrain shader, with the waves and sway.
-[[injection]]
-id = "shader"
-kind = "HEAD"
-cancellable = true
-target = "horizon_client_render::gfx::native_material::shader_source"
-helper = "shader.rs"
-bindings = [{ name = "source", ty = "&str", value = "source" }]
-
 # No shader pack picked: the mod's own vanilla-look pack runs, so the waves and sway can.
 [[injection]]
 id = "builtin"
