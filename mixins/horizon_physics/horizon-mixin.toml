@@ -1,6 +1,6 @@
 [mod]
 id = "horizon_physics"
-version = "0.6.0"
+version = "0.6.1"
 priority = 100
 
 [compatibility]

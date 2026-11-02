@@ -35,9 +35,9 @@ fn horizon_physics_builtin(game: &mut crate::game::Game<'_>) {
         // Written once a session: the files on disk are the mod's, kept as this version made them.
         let files = [("horizon-shaders.toml", sway::BUILTIN_MANIFEST), ("material.wgsl", sway::BUILTIN_MATERIAL)];
         let ok = std::fs::create_dir_all(&dir).is_ok()
-            && files.iter().all(|(name, text)| {
-                let path = dir.join(name);
-                std::fs::read_to_string(&path).is_ok_and(|t| t == *text) || std::fs::write(&path, text).is_ok()
+            && files.iter().all(|file| {
+                let path = dir.join(file.0);
+                std::fs::read_to_string(&path).is_ok_and(|t| t == file.1) || std::fs::write(&path, file.1).is_ok()
             });
         if !ok {
             return;

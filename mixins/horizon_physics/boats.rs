@@ -30,7 +30,7 @@ fn horizon_physics_boats(
         );
         let (bx, bz) = (pos.x.floor() as i32, pos.z.floor() as i32);
         let base = pos.y.floor() as i32;
-        let Some(y) = [base, base - 1, base + 1].into_iter().find(|&y| water(bx, y, bz) && !water(bx, y + 1, bz)) else {
+        let Some(y) = [base, base - 1, base + 1].into_iter().find(|y| water(bx, *y, bz) && !water(bx, *y + 1, bz)) else {
             continue;
         };
         // How open the water is under it: its four corners' marks, as the shader blends them.
@@ -64,10 +64,11 @@ fn horizon_physics_boats(
         let near = moves
             .iter()
             .map(|m| (m, (p.x - m.0.x).powi(2) + (p.z - m.0.z).powi(2)))
-            .filter(|(_, d)| *d < 2.4 * 2.4)
+            .filter(|e| e.1 < 2.4 * 2.4)
             .min_by(|a, b| a.1.total_cmp(&b.1));
-        if let Some(((c, lift, turn), _)) = near {
-            v.pos = (*c + *turn * (p - *c) + *lift).to_array();
+        if let Some(hit) = near {
+            let m = hit.0;
+            v.pos = (m.0 + m.2 * (p - m.0) + m.1).to_array();
         }
     }
     ::core::ops::ControlFlow::Break(())
