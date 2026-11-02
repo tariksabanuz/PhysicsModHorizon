@@ -19,7 +19,7 @@ use crate::mesher::Vertex;
 
 pub const ID: &str = "horizon_physics";
 pub const NAME: &str = "Horizon Physics";
-pub const VERSION: &str = "0.6.6";
+pub const VERSION: &str = "0.7.0";
 pub const DESCRIPTION: &str =
     "By tariksabanuz. Blocks crumble and blow apart, ragdolls, items, smoke, ropes, capes, liquids, waves and swaying plants.";
 
@@ -756,7 +756,7 @@ const SUBSTEPS: usize = 4;
 const STATIC_FRICTION: f64 = 0.6;
 const DYNAMIC_FRICTION: f64 = 0.45;
 const RESTITUTION: f64 = 0.25;
-const MAX_BODIES: usize = 1200;
+const MAX_BODIES: usize = 500;
 
 pub struct Physics {
     pub bodies: Vec<Body>,
@@ -1973,7 +1973,7 @@ pub struct Puff {
     delay: f64,
 }
 
-const MAX_PUFFS: usize = 1400;
+const MAX_PUFFS: usize = 600;
 
 impl Puff {
     fn new(kind: FxKind, x: V3, v: V3, size: f64, life: f64, from: [f64; 3], to: [f64; 3], rng: &mut Rng) -> Puff {
@@ -3252,7 +3252,7 @@ pub struct Drop {
     shade: f64,
 }
 
-const MAX_DROPS: usize = 1200;
+const MAX_DROPS: usize = 400;
 /// How close two drops may come.
 const DROP_GAP: f64 = 0.12;
 
