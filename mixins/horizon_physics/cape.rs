@@ -1,6 +1,5 @@
 // CapeLayer as cloth: the cape is posed hanging straight (no flap or lean, the cloth does that
 // itself), drawn into a buffer of our own, and that shape is what the cloth hangs from.
-#[allow(clippy::too_many_arguments)]
 fn horizon_physics_cape(
     m: &Mob,
     alpha: f32,
