@@ -10,9 +10,21 @@ brings PhysicsMod-style physics to the client, written from scratch:
 - **Mobs falling apart**: or the parts come loose and tumble separately (or a mix of both).
 - **Item physics**: dropped items tumble while they fly and lie flat on the ground instead of floating
   and spinning.
+- **Explosions**: TNT, creepers, beds and the rest blow their blocks apart: the pieces are thrown out
+  of the blast, with a fireball, sparks that bounce and smoke that rises and drifts. Pieces lying
+  around and mobs killed by the blast are thrown too.
+- **Smoke and fire**: fire, soul fire, lit campfires and open lava give off smoke that rises, spreads
+  under ceilings and drifts with the wind.
+- **Snow footprints**: walking on snow leaves footprints, left and right, that fade after 30 seconds.
+- **Ropes**: leads and fishing lines sag, swing and lie on the blocks.
+- **Cloth capes**: capes are cloth that trails, flutters in the wind and hangs down when you stand.
+- **Wind**: calm, a breeze or strong, for smoke, capes and ropes.
 - **Gravity**: Earth, Moon, Mars, Pluto or none, for the pieces.
 
 Settings: Options > Mods > Horizon Physics (saved in `config/horizon_physics.txt`).
+
+Not included: waves, liquid simulation and waving plants. Those need a change to how the world itself
+is drawn; Horizon's shader packs have no vertex stage, and the terrain is meshed once per chunk.
 
 All of it is client-side decoration: nothing changes in the world or for other players. The pieces are
 simulated with a small rigid-body solver (position-based dynamics) against the blocks around them.

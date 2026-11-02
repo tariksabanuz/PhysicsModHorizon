@@ -25,17 +25,23 @@ pub mod blocks {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum Fluid { None, Water, Lava }
     pub struct StateFacts {
+        pub name: std::sync::Arc<str>,
         pub full_collision: bool,
         pub legacy_solid: bool,
         pub fluid: Fluid,
         pub outline: std::sync::Arc<[[f64; 6]]>,
     }
     pub struct BlockFacts(pub Vec<StateFacts>);
-    impl BlockFacts { pub fn get(&self, id: super::BlockStateId) -> &StateFacts { &self.0[id.0 as usize] } }
+    impl BlockFacts {
+        pub fn get(&self, id: super::BlockStateId) -> &StateFacts { &self.0[id.0 as usize] }
+        pub fn is_air(&self, id: super::BlockStateId) -> bool { id.0 == 0 }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlockStateId(pub u32);
+pub mod horizon_world { pub mod registry { pub use crate::BlockStateId; } }
+
 
 pub mod geometry {
     #[derive(Clone, Copy, Debug, Default)]
@@ -44,15 +50,37 @@ pub mod geometry {
 
 pub mod mobs {
     use crate::geometry::Vec3;
-    pub struct Mob { pub id: u32, pub position: Vec3, pub previous: Vec3, pub health: f32 }
+    pub struct Mob { pub id: u32, pub position: Vec3, pub previous: Vec3, pub health: f32, pub kind: std::sync::Arc<MobType> }
+    pub struct MobType;
+    impl MobType { pub fn layer(&self, key: &str) -> Option<&std::sync::Arc<Part>> { None } }
+    pub struct Animations;
+    pub mod anim {
+        use super::{Animations, Mob, Part};
+        pub struct State;
+        pub fn state(m: &Mob, alpha: f32) -> State { State }
+        pub struct Poses;
+        impl Poses {
+            pub fn new(part: &Part) -> Poses { Poses }
+            pub fn get(&mut self, name: &str) -> &mut [f32; 9] { Box::leak(Box::new([0.0; 9])) }
+        }
+        pub fn setup(m: &Mob, s: &State, poses: &mut Poses, a: &Animations) {}
+    }
     impl Mob { pub fn alive(&self) -> bool { self.health > 0.0 } }
-    pub struct MobData;
+    pub struct MobData { pub animations: Animations }
     pub struct Part;
     pub struct ModelNormals;
-    pub struct Poses;
     pub mod render {
-        use super::{Mob, MobData, ModelNormals, Part, Poses};
+        use super::{Mob, MobData, ModelNormals, Part, anim::{self, Poses}};
         use crate::mesher::Vertex;
+        use std::f32::consts::PI;
+        pub fn draw(part: &Part, base: glam::Mat4, poses: &Poses, uv: [f32; 4], color: u32, light: u32, overlay: u32, out: &mut Vec<Vertex>) {}
+        pub fn cape(m: &Mob, alpha: f32, base: glam::Mat4, uv: [f32; 4], light: u32, data: &MobData, out: &mut Vec<Vertex>) {
+            //CAPE//
+            match __h_cape(m, alpha, base, uv, light, data, &mut *out) {
+                ::core::ops::ControlFlow::Break(()) => return,
+                ::core::ops::ControlFlow::Continue(()) => {}
+            }
+        }
         pub type Atlas<'a> = &'a dyn Fn(&str) -> Option<[f32; 4]>;
         pub fn render_with(
             m: &Mob,
@@ -88,6 +116,12 @@ pub mod mobs {
     }
 }
 
+pub mod gizmos {
+    pub struct Line { pub start: [f64; 3], pub end: [f64; 3], pub color: u32, pub width: f32 }
+}
+pub mod gfx {
+    pub fn outline_width(width: u32) -> f32 { 2.5 }
+}
 pub mod hud {
     #[derive(Clone, Copy, Debug)]
     pub struct Rect { pub u0: f32, pub v0: f32, pub u1: f32, pub v1: f32, pub w: u32, pub h: u32 }
@@ -112,7 +146,22 @@ pub mod game {
     enum Dim { Overworld, Nether, End }
     pub struct Resources { facts: BlockFacts }
     impl Resources { fn facts(&self) -> &BlockFacts { &self.facts } }
-    pub struct HudAtlas { pub sprites: HashMap<String, Rect> }
+    pub struct Font;
+    impl Font { pub fn white(&self) -> Rect { Rect { u0: 0.0, v0: 0.0, u1: 0.0, v1: 0.0, w: 1, h: 1 } } }
+    pub struct HudAtlas { pub sprites: HashMap<String, Rect>, pub font: Font }
+    pub struct BlockState { pub name: String, pub properties: std::collections::BTreeMap<String, String> }
+    pub struct Registry;
+    impl Registry { pub fn state(&self, id: BlockStateId) -> Option<&BlockState> { None } }
+    pub struct Assets { pub registry: &'static Registry }
+    pub struct GroundState { pub on_ground: bool }
+    pub struct PlayerMotion {
+        pub swimming: bool,
+        pub position: crate::geometry::Vec3,
+        pub ground: GroundState,
+        pub yaw: f32,
+        pub spectator: bool,
+        pub flying: bool,
+    }
     pub struct UiResources { pub atlas: HudAtlas }
     pub struct World;
     impl World {
@@ -133,7 +182,7 @@ pub mod game {
     }
     pub struct ItemRenderer;
     impl ItemRenderer { pub fn item_id(&self, item: &str) -> i32 { 0 } }
-    pub struct PackResources { pub item_renderer: ItemRenderer }
+    pub struct PackResources { pub item_renderer: ItemRenderer, assets: std::sync::Arc<Assets> }
     pub struct Game<'a> {
         res: std::sync::Arc<Resources>,
         gui: UiResources,
@@ -142,6 +191,7 @@ pub mod game {
         dropped: Vec<ItemEntity>,
         pickups: pickups::Pickups,
         pack: PackResources,
+        player: Option<PlayerMotion>,
         _l: std::marker::PhantomData<&'a ()>,
     }
     impl Game<'_> {
@@ -203,6 +253,60 @@ pub mod game {
             pub(super) fn end_geometry(&self, camera: glam::DVec3, out: &mut Vec<Vertex>) {
                 //WORLD//
                 __h_world(self, camera, &mut *out);
+            }
+        }
+    }
+    pub mod lan_particles {
+        use super::Game;
+        use crate::horizon_world::registry::BlockStateId;
+        pub mod play {
+            pub struct ExplosionParticle;
+            pub struct Explode { pub center: [f64; 3], pub radius: f32, pub block_particles: Vec<ExplosionParticle> }
+        }
+        impl Game<'_> {
+            pub(super) fn remote_explode(&mut self, p: &play::Explode) {
+                //EXPLODE//
+                __h_explode(&mut *self, p);
+            }
+        }
+    }
+    pub mod remote {
+        use super::Game;
+        use crate::horizon_world::registry::BlockStateId;
+        impl Game<'_> {
+            fn server_block(&mut self, pos: [i32; 3], state: i32) {
+                //AIRED//
+                __h_aired(&mut *self, pos, state);
+            }
+        }
+    }
+    pub mod leads {
+        use super::Game;
+        use horizon_client::mesher::Vertex;
+        impl Game<'_> {
+            pub(super) fn leash_geometry(&self, camera: glam::DVec3, alpha: f64, out: &mut Vec<Vertex>) {
+                //LEADS//
+                match __h_leads(self, camera, alpha, &mut *out) {
+                    ::core::ops::ControlFlow::Break(()) => return,
+                    ::core::ops::ControlFlow::Continue(()) => {}
+                }
+            }
+        }
+    }
+    pub mod fishing {
+        use super::Game;
+        use horizon_client::{gizmos::Line, mesher::Vertex};
+        impl Game<'_> {
+            fn hook_position(&self, alpha: f64) -> Option<glam::DVec3> { None }
+            fn rod_hand_position(&self, alpha: f64, size: [u32; 2]) -> Option<glam::DVec3> { None }
+            fn remote_hook_ends(&self, alpha: f64) -> Vec<(glam::DVec3, glam::DVec3)> { Vec::new() }
+            pub(super) fn fishing_line(&self, alpha: f64, size: [u32; 2]) -> Vec<Line> {
+                //FISHING//
+                match __h_fishing(self, alpha, size) {
+                    ::core::ops::ControlFlow::Break(v) => return v,
+                    ::core::ops::ControlFlow::Continue(()) => {}
+                }
+                Vec::new()
             }
         }
     }

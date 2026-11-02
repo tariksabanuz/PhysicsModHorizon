@@ -19,9 +19,9 @@ use crate::mesher::Vertex;
 
 pub const ID: &str = "horizon_physics";
 pub const NAME: &str = "Horizon Physics";
-pub const VERSION: &str = "0.1.0";
+pub const VERSION: &str = "0.2.0";
 pub const DESCRIPTION: &str =
-    "Blocks crumble into pieces, mobs fall as ragdolls or apart, items lie flat. Client-side.";
+    "Blocks crumble and blow apart, ragdolls, item physics, smoke, footprints, ropes and capes.";
 
 // ---------------------------------------------------------------------------------------------
 // Settings
@@ -33,6 +33,18 @@ pub struct Settings {
     /// 0 off, 1 ragdoll, 2 fall apart, 3 mixed.
     pub deaths: u8,
     pub items: bool,
+    /// Blocks blown apart, fireballs, sparks and smoke.
+    pub explosions: bool,
+    /// Smoke rising from fire, campfires and lava.
+    pub smoke: bool,
+    /// Footprints in snow.
+    pub snow: bool,
+    /// Leads and fishing lines that sag and swing.
+    pub ropes: bool,
+    /// Capes as cloth.
+    pub capes: bool,
+    /// 0 calm, 1 breeze, 2 strong.
+    pub wind: u8,
     /// 0 Earth, 1 Moon, 2 Mars, 3 Pluto, 4 zero.
     pub gravity: u8,
     /// 0 few, 1 normal, 2 many.
@@ -43,7 +55,20 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { blocks: true, deaths: 1, items: true, gravity: 0, pieces: 1, lifetime: 1 }
+        Self {
+            blocks: true,
+            deaths: 1,
+            items: true,
+            explosions: true,
+            smoke: true,
+            snow: true,
+            ropes: true,
+            capes: true,
+            wind: 1,
+            gravity: 0,
+            pieces: 1,
+            lifetime: 1,
+        }
     }
 }
 
@@ -52,6 +77,7 @@ const GRAVITY: [(&str, f64); 5] =
     [("Earth", 1.0), ("Moon", 0.165), ("Mars", 0.38), ("Pluto", 0.063), ("Zero", 0.0)];
 const PIECES: [(&str, usize); 3] = [("Few", 4), ("Normal", 8), ("Many", 16)];
 const LIFETIME: [(&str, f64); 4] = [("10 s", 10.0), ("30 s", 30.0), ("60 s", 60.0), ("5 min", 300.0)];
+const WIND: [(&str, f64); 3] = [("Calm", 0.0), ("Breeze", 1.0), ("Strong", 2.4)];
 /// Earth's pull on the pieces, in blocks per second squared. Real gravity (9.81) looks slow at
 /// the scale of blocks; twice that reads as a real fall.
 const EARTH: f64 = 20.0;
@@ -66,6 +92,12 @@ impl Settings {
             format!("Crumbling blocks: {}", on_off(self.blocks)),
             format!("Mob deaths: {}", DEATHS[self.deaths as usize % 4]),
             format!("Item physics: {}", on_off(self.items)),
+            format!("Explosions: {}", on_off(self.explosions)),
+            format!("Smoke and fire: {}", on_off(self.smoke)),
+            format!("Snow footprints: {}", on_off(self.snow)),
+            format!("Leads and fishing lines: {}", on_off(self.ropes)),
+            format!("Cloth capes: {}", on_off(self.capes)),
+            format!("Wind: {}", WIND[self.wind as usize % 3].0),
             format!("Gravity: {}", GRAVITY[self.gravity as usize % 5].0),
             format!("Pieces per block: {}", PIECES[self.pieces as usize % 3].0),
             format!("Pieces stay for: {}", LIFETIME[self.lifetime as usize % 4].0),
@@ -79,10 +111,16 @@ impl Settings {
             0 => self.blocks = !self.blocks,
             1 => self.deaths = (self.deaths + 1) % 4,
             2 => self.items = !self.items,
-            3 => self.gravity = (self.gravity + 1) % 5,
-            4 => self.pieces = (self.pieces + 1) % 3,
-            5 => self.lifetime = (self.lifetime + 1) % 4,
-            6 => return true,
+            3 => self.explosions = !self.explosions,
+            4 => self.smoke = !self.smoke,
+            5 => self.snow = !self.snow,
+            6 => self.ropes = !self.ropes,
+            7 => self.capes = !self.capes,
+            8 => self.wind = (self.wind + 1) % 3,
+            9 => self.gravity = (self.gravity + 1) % 5,
+            10 => self.pieces = (self.pieces + 1) % 3,
+            11 => self.lifetime = (self.lifetime + 1) % 4,
+            12 => return true,
             _ => {}
         }
         false
@@ -90,8 +128,19 @@ impl Settings {
 
     pub fn to_text(&self) -> String {
         format!(
-            "blocks={}\ndeaths={}\nitems={}\ngravity={}\npieces={}\nlifetime={}\n",
-            self.blocks as u8, self.deaths, self.items as u8, self.gravity, self.pieces, self.lifetime
+            "blocks={}\ndeaths={}\nitems={}\nexplosions={}\nsmoke={}\nsnow={}\nropes={}\ncapes={}\nwind={}\ngravity={}\npieces={}\nlifetime={}\n",
+            self.blocks as u8,
+            self.deaths,
+            self.items as u8,
+            self.explosions as u8,
+            self.smoke as u8,
+            self.snow as u8,
+            self.ropes as u8,
+            self.capes as u8,
+            self.wind,
+            self.gravity,
+            self.pieces,
+            self.lifetime
         )
     }
 
@@ -104,6 +153,12 @@ impl Settings {
                 "blocks" => s.blocks = n != 0,
                 "deaths" => s.deaths = n % 4,
                 "items" => s.items = n != 0,
+                "explosions" => s.explosions = n != 0,
+                "smoke" => s.smoke = n != 0,
+                "snow" => s.snow = n != 0,
+                "ropes" => s.ropes = n != 0,
+                "capes" => s.capes = n != 0,
+                "wind" => s.wind = n % 3,
                 "gravity" => s.gravity = n % 5,
                 "pieces" => s.pieces = n % 3,
                 "lifetime" => s.lifetime = n % 4,
@@ -115,6 +170,10 @@ impl Settings {
 
     pub fn gravity(&self) -> f64 {
         EARTH * GRAVITY[self.gravity as usize % 5].1
+    }
+
+    pub fn wind(&self) -> f64 {
+        WIND[self.wind as usize % 3].1
     }
 
     pub fn pieces_per_block(&self) -> usize {
@@ -454,7 +513,7 @@ fn penetration(world: &dyn World, p: V3, prev: V3, ignore: Option<[i32; 3]>) -> 
     for b in boxes {
         let lo = o + v3(b[0], b[1], b[2]);
         let hi = o + v3(b[3], b[4], b[5]);
-        let inside = (0..3).all(|k| p.get(k) > lo.get(k) && p.get(k) < hi.get(k));
+        let inside = (0..3).all(|k| p.get(k) >= lo.get(k) && p.get(k) < hi.get(k));
         if !inside {
             continue;
         }
@@ -660,7 +719,7 @@ const SUBSTEPS: usize = 4;
 const STATIC_FRICTION: f64 = 0.6;
 const DYNAMIC_FRICTION: f64 = 0.45;
 const RESTITUTION: f64 = 0.25;
-const MAX_BODIES: usize = 900;
+const MAX_BODIES: usize = 1200;
 
 pub struct Physics {
     pub bodies: Vec<Body>,
@@ -1195,6 +1254,9 @@ impl Default for Guard {
 }
 
 pub static RENDER: Guard = Guard::new();
+/// Set while the lead hook draws the game's own leads into its buffer.
+pub static LEADS: Guard = Guard::new();
+
 static CAPTURE: Mutex<Option<Vec<usize>>> = Mutex::new(None);
 static CAPTURING: AtomicBool = AtomicBool::new(false);
 /// Whether the mod is on in Options > Mods (kept by the frame hook, read by the mob hook).
@@ -1486,6 +1548,7 @@ struct State {
     dim: u8,
     items: HashMap<u32, (Quat, u64)>,
     frame: u64,
+    env: Env,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -1501,6 +1564,7 @@ fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
         dim: 255,
         items: HashMap::new(),
         frame: 0,
+        env: Env::default(),
     });
     f(s)
 }
@@ -1509,6 +1573,7 @@ pub fn clear() {
     with(|s| {
         s.physics.clear();
         s.items.clear();
+        s.env.clear();
     });
 }
 
@@ -1555,12 +1620,24 @@ pub fn spawn_mob(verts: &[Vertex], marks: &[usize], start: usize, camera: [f64; 
     let marks: Vec<usize> = marks.iter().filter_map(|m| m.checked_sub(start)).collect();
     let cam = v3(camera[0], camera[1], camera[2]);
     let vel = v3(velocity[0], velocity[1], velocity[2]);
-    with(|s| s.physics.spawn_mob(verts, &marks, cam, vel, st.deaths, st.lifetime()));
+    with(|s| {
+        let before = s.physics.objects.len();
+        s.physics.spawn_mob(verts, &marks, cam, vel, st.deaths, st.lifetime());
+        // A mob killed by a blast is thrown by it.
+        if s.physics.objects.len() > before {
+            let now = s.env.clock;
+            let blasts: Vec<Blast> = s.env.blasts.iter().filter(|b| now - b.at < 0.6).copied().collect();
+            for b in blasts {
+                s.physics.blast(b.center, b.radius * 2.0, 0.6, before);
+            }
+        }
+    });
 }
 
 /// Once a frame: step the pieces and draw them. `dim` tells dimensions apart; a change, or a big
-/// jump of the camera (a teleport, another world), clears them.
-pub fn frame(dim: u8, camera: [f64; 3], world: &dyn World, out: &mut Vec<Vertex>) {
+/// jump of the camera (a teleport, another world), clears them. `white` is a plain white texel of
+/// the atlas, for smoke, sparks and footprints.
+pub fn frame(dim: u8, camera: [f64; 3], white: [f32; 4], world: &dyn World, out: &mut Vec<Vertex>) {
     let st = settings();
     with(|s| {
         let cam = v3(camera[0], camera[1], camera[2]);
@@ -1568,6 +1645,7 @@ pub fn frame(dim: u8, camera: [f64; 3], world: &dyn World, out: &mut Vec<Vertex>
             s.physics.clear();
             s.dead.clear();
             s.items.clear();
+            s.env.clear();
             s.dim = dim;
         }
         s.camera = cam;
@@ -1578,8 +1656,11 @@ pub fn frame(dim: u8, camera: [f64; 3], world: &dyn World, out: &mut Vec<Vertex>
         s.frame += 1;
         let frame = s.frame;
         s.items.retain(|_, (_, seen)| frame - *seen < 120);
+        blow_pending(s, &st);
         s.physics.step(dt, st.gravity(), world);
         s.physics.emit(cam, world, out);
+        s.env.step(s.last_dt, cam, frame, &st, world);
+        s.env.emit(cam, white, world, out);
     });
 }
 
@@ -1634,3 +1715,996 @@ pub fn item_rotation(id: u32, grounded: bool, velocity: [f64; 3], flat: bool) ->
     })
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// Explosions, smoke, footprints, ropes and capes
+// ---------------------------------------------------------------------------------------------
+
+/// Full block and sky light, for things that glow.
+const GLOW: u32 = 240 | 240 << 8;
+
+/// An entity vertex colour (ABGR bytes) from 0..1 RGB.
+fn abgr(c: [f64; 3]) -> u32 {
+    let b = |x: f64| (x.clamp(0.0, 1.0) * 255.0).round() as u32;
+    0xFF00_0000 | b(c[2]) << 16 | b(c[1]) << 8 | b(c[0])
+}
+
+pub fn mix3(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
+    let t = t.clamp(0.0, 1.0);
+    [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]
+}
+
+/// The wind at time `t` (seconds): a direction that wanders slowly and gusts, in blocks per
+/// second, times `strength`.
+pub fn wind_at(t: f64, strength: f64) -> V3 {
+    if strength <= 0.0 {
+        return V3::default();
+    }
+    let angle = 0.7 + t * 0.013 + 0.6 * (t * 0.071).sin();
+    let gust = 0.65 + 0.25 * (t * 0.53).sin() + 0.1 * (t * 1.7 + 1.3).sin();
+    v3(angle.cos(), 0.0, angle.sin()) * (1.6 * gust * strength)
+}
+
+fn solid(world: &dyn World, p: V3) -> bool {
+    match world.cell(floor(p.x), floor(p.y), floor(p.z)) {
+        Cell::Full => true,
+        Cell::Boxes(b) => {
+            let l = v3(p.x - p.x.floor(), p.y - p.y.floor(), p.z - p.z.floor());
+            b.iter().any(|b| (0..3).all(|k| l.get(k) >= b[k] && l.get(k) < b[k + 3]))
+        }
+        _ => false,
+    }
+}
+
+/// A cube of `half` around `at` (camera-relative), turned by `q`, in one colour.
+#[allow(clippy::too_many_arguments)]
+fn cube(at: V3, half: f64, q: Quat, white: [f32; 4], color: u32, light: u32, shaded: bool, out: &mut Vec<Vertex>) {
+    let uv = [(white[0] + white[2]) * 0.5, (white[1] + white[3]) * 0.5];
+    const F: [([f64; 3], [[f64; 3]; 4]); 6] = [
+        ([1.0, 0.0, 0.0], [[1.0, -1.0, -1.0], [1.0, 1.0, -1.0], [1.0, 1.0, 1.0], [1.0, -1.0, 1.0]]),
+        ([-1.0, 0.0, 0.0], [[-1.0, -1.0, 1.0], [-1.0, 1.0, 1.0], [-1.0, 1.0, -1.0], [-1.0, -1.0, -1.0]]),
+        ([0.0, 1.0, 0.0], [[-1.0, 1.0, -1.0], [-1.0, 1.0, 1.0], [1.0, 1.0, 1.0], [1.0, 1.0, -1.0]]),
+        ([0.0, -1.0, 0.0], [[-1.0, -1.0, 1.0], [-1.0, -1.0, -1.0], [1.0, -1.0, -1.0], [1.0, -1.0, 1.0]]),
+        ([0.0, 0.0, 1.0], [[-1.0, -1.0, 1.0], [1.0, -1.0, 1.0], [1.0, 1.0, 1.0], [-1.0, 1.0, 1.0]]),
+        ([0.0, 0.0, -1.0], [[1.0, -1.0, -1.0], [-1.0, -1.0, -1.0], [-1.0, 1.0, -1.0], [1.0, 1.0, -1.0]]),
+    ];
+    let pack = |x: f64| (x.clamp(-1.0, 1.0) * 127.0) as i8;
+    for (n, corners) in F {
+        let nw = q.rotate(v3(n[0], n[1], n[2]));
+        let normal = if shaded { [pack(nw.x), pack(nw.y), pack(nw.z), -127] } else { [0; 4] };
+        for c in corners {
+            let p = at + q.rotate(v3(c[0], c[1], c[2]) * half);
+            out.push(Vertex {
+                pos: [p.x as f32, p.y as f32, p.z as f32],
+                uv,
+                layer: 0,
+                color,
+                light,
+                normal,
+                glint_uv: [0.0, 0.0],
+            });
+        }
+    }
+}
+
+/// A flat quad (both sides) at four camera-relative corners.
+fn quad(c: [V3; 4], white: [f32; 4], color: u32, light: u32, out: &mut Vec<Vertex>) {
+    let uv = [(white[0] + white[2]) * 0.5, (white[1] + white[3]) * 0.5];
+    for order in [[0, 1, 2, 3], [3, 2, 1, 0]] {
+        for i in order {
+            let p = c[i];
+            out.push(Vertex {
+                pos: [p.x as f32, p.y as f32, p.z as f32],
+                uv,
+                layer: 0,
+                color,
+                light,
+                normal: [0, 127, 0, -127],
+                glint_uv: [0.0, 0.0],
+            });
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FxKind {
+    /// Rises, drifts with the wind, grows and thins out.
+    Smoke,
+    /// Falls and bounces, glowing.
+    Spark,
+    /// A glowing ball of fire that swells and dies away quickly.
+    Flame,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Puff {
+    pub x: V3,
+    pub v: V3,
+    pub size: f64,
+    pub age: f64,
+    pub life: f64,
+    pub from: [f64; 3],
+    pub to: [f64; 3],
+    pub kind: FxKind,
+    q: Quat,
+    w: V3,
+}
+
+const MAX_PUFFS: usize = 1600;
+
+impl Puff {
+    fn new(kind: FxKind, x: V3, v: V3, size: f64, life: f64, from: [f64; 3], to: [f64; 3], rng: &mut Rng) -> Puff {
+        let q = Quat::axis_angle(rng.unit(), rng.range(0.0, std::f64::consts::TAU));
+        Puff { x, v, size, age: 0.0, life, from, to, kind, q, w: rng.unit() * rng.range(0.3, 1.5) }
+    }
+
+    /// How big the puff is now (0..1 of its size).
+    pub fn scale_pub(&self) -> f64 {
+        self.scale()
+    }
+
+    fn scale(&self) -> f64 {
+        let t = (self.age / self.life).clamp(0.0, 1.0);
+        match self.kind {
+            FxKind::Smoke => (0.35 + 0.65 * (t * 4.0).min(1.0)) * (1.0 + 0.8 * t) * ((1.0 - t) / 0.35).min(1.0),
+            FxKind::Spark => 1.0 - t * t,
+            FxKind::Flame => (0.5 + 1.5 * (t * 3.0).min(1.0)) * ((1.0 - t) / 0.5).min(1.0),
+        }
+    }
+}
+
+/// An explosion seen in the last moments.
+#[derive(Clone, Copy, Debug)]
+pub struct Blast {
+    pub center: V3,
+    pub radius: f64,
+    pub at: f64,
+}
+
+/// A block that has just turned to air (from the server), in case an explosion explains it.
+#[derive(Clone, Debug)]
+pub struct Aired {
+    pub pos: [i32; 3],
+    pub boxes: Vec<[f64; 6]>,
+    pub uv: [f32; 4],
+    pub tint: u32,
+    pub at: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Print {
+    pub x: V3,
+    pub yaw: f64,
+    pub age: f64,
+}
+
+#[derive(Clone, Debug)]
+pub struct Rope {
+    pub pts: Vec<V3>,
+    prev: Vec<V3>,
+    seen: u64,
+    group: u8,
+}
+
+#[derive(Clone, Debug)]
+pub struct Cloth {
+    pub pts: Vec<V3>,
+    prev: Vec<V3>,
+    seen: u64,
+    width: f64,
+    height: f64,
+}
+
+/// The cloth grid of a cape: points across and down.
+const CAPE_W: usize = 5;
+const CAPE_H: usize = 8;
+
+/// Everything that is not a rigid piece.
+pub struct Env {
+    pub puffs: Vec<Puff>,
+    pub blasts: Vec<Blast>,
+    aired: Vec<Aired>,
+    /// Fire, campfires and lava near the camera, by position, with their kind.
+    pub emitters: HashMap<[i32; 3], u8>,
+    scan: i32,
+    pub prints: Vec<Print>,
+    last_step: Option<V3>,
+    left: bool,
+    pub ropes: Vec<Rope>,
+    pub capes: HashMap<u32, Cloth>,
+    /// Seconds since the start, for the wind.
+    pub clock: f64,
+    rng: Rng,
+    /// Explosions waiting for the next frame's world (their pieces need the blocks).
+    pending: Vec<(Blast, Vec<Aired>)>,
+    frame: u64,
+    camera: V3,
+}
+
+impl Default for Env {
+    fn default() -> Self {
+        Env {
+            puffs: Vec::new(),
+            blasts: Vec::new(),
+            aired: Vec::new(),
+            emitters: HashMap::new(),
+            scan: 0,
+            prints: Vec::new(),
+            last_step: None,
+            left: false,
+            ropes: Vec::new(),
+            capes: HashMap::new(),
+            clock: 0.0,
+            rng: Rng::new(0xF1CE),
+            pending: Vec::new(),
+            frame: 0,
+            camera: V3::default(),
+        }
+    }
+}
+
+impl Env {
+    pub fn clear(&mut self) {
+        self.puffs.clear();
+        self.blasts.clear();
+        self.aired.clear();
+        self.emitters.clear();
+        self.prints.clear();
+        self.last_step = None;
+        self.ropes.clear();
+        self.capes.clear();
+        self.pending.clear();
+    }
+
+    fn puff(&mut self, p: Puff) {
+        if self.puffs.len() >= MAX_PUFFS {
+            // The oldest smoke makes room.
+            if let Some(i) = self.puffs.iter().position(|q| q.kind == FxKind::Smoke) {
+                self.puffs.swap_remove(i);
+            } else {
+                return;
+            }
+        }
+        self.puffs.push(p);
+    }
+
+    /// An explosion at `center`: the fireball, sparks and smoke, and the blocks it removed (those
+    /// that already turned to air, and those that will within a moment) are blown away.
+    pub fn explode(&mut self, center: V3, radius: f64) {
+        let r = radius.clamp(0.5, 12.0);
+        let rng = &mut self.rng;
+        let mut new = Vec::new();
+        let flames = (6.0 + r * 3.0) as usize;
+        for _ in 0..flames {
+            let d = rng.unit();
+            let x = center + d * rng.range(0.0, r * 0.45);
+            let v = d * rng.range(1.0, 3.0 + r) + v3(0.0, rng.range(0.5, 2.0), 0.0);
+            let warm = [1.0, rng.range(0.75, 0.95), rng.range(0.35, 0.55)];
+            new.push(Puff::new(FxKind::Flame, x, v, rng.range(0.25, 0.45) * (0.6 + r * 0.15), rng.range(0.35, 0.7), warm, [0.55, 0.12, 0.02], rng));
+        }
+        let sparks = (16.0 + r * 10.0) as usize;
+        for _ in 0..sparks {
+            let d = rng.unit();
+            let v = d * rng.range(5.0, 9.0 + r * 2.0) + v3(0.0, rng.range(2.0, 6.0), 0.0);
+            new.push(Puff::new(FxKind::Spark, center + d * 0.3, v, rng.range(0.025, 0.05), rng.range(0.8, 2.2), [1.0, 0.9, 0.5], [0.9, 0.25, 0.05], rng));
+        }
+        let smoke = (8.0 + r * 5.0) as usize;
+        for _ in 0..smoke {
+            let d = rng.unit();
+            let x = center + d * rng.range(0.0, r * 0.7);
+            let v = d * rng.range(0.5, 2.0) + v3(0.0, rng.range(0.8, 2.2), 0.0);
+            let g = rng.range(0.18, 0.32);
+            new.push(Puff::new(FxKind::Smoke, x, v, rng.range(0.35, 0.65) * (0.7 + r * 0.1), rng.range(3.0, 6.5), [g * 0.8, g * 0.75, g * 0.7], [0.55, 0.55, 0.56], rng));
+        }
+        for p in new {
+            self.puff(p);
+        }
+        let blast = Blast { center, radius: r, at: self.clock };
+        self.blasts.push(blast);
+        // Blocks that went first, then the explosion: they belong to it.
+        let now = self.clock;
+        let (mine, rest): (Vec<Aired>, Vec<Aired>) = std::mem::take(&mut self.aired)
+            .into_iter()
+            .partition(|a| now - a.at < 0.6 && in_blast(&blast, a.pos));
+        self.aired = rest;
+        self.pending.push((blast, mine));
+    }
+
+    /// A block at `pos` just turned to air. Inside a fresh blast it is blown away; otherwise it is
+    /// remembered for a moment, in case its explosion comes next.
+    pub fn aired(&mut self, a: Aired) {
+        let now = self.clock;
+        self.aired.retain(|x| now - x.at < 0.6);
+        if let Some(b) = self.blasts.iter().rev().find(|b| now - b.at < 1.0 && in_blast(b, a.pos)).copied() {
+            self.pending.push((b, vec![a]));
+            return;
+        }
+        if self.aired.len() < 4096 {
+            self.aired.push(a);
+        }
+    }
+
+    pub fn step(&mut self, dt: f64, camera: V3, frame: u64, st: &Settings, world: &dyn World) {
+        self.clock += dt;
+        self.frame = frame;
+        self.camera = camera;
+        let now = self.clock;
+        self.blasts.retain(|b| now - b.at < 2.0);
+        let wind = wind_at(now, st.wind());
+        let g = st.gravity();
+        // Fire, campfires and lava give off smoke.
+        if st.smoke && dt > 0.0 {
+            self.emitters.retain(|p, _| {
+                let d = v3(f64::from(p[0]), f64::from(p[1]), f64::from(p[2])) - camera;
+                d.len() < 40.0
+            });
+            let list: Vec<([i32; 3], u8)> = self.emitters.iter().map(|(p, k)| (*p, *k)).collect();
+            for (p, kind) in list {
+                // Puffs a second, size, life.
+                let (rate, size, life, from) = match kind {
+                    1 => (2.5, 0.16, 3.5, [0.2, 0.2, 0.2]),
+                    2 => (2.0, 0.15, 3.5, [0.22, 0.25, 0.27]),
+                    3 => (3.5, 0.2, 7.0, [0.32, 0.32, 0.32]),
+                    4 => (3.0, 0.2, 7.0, [0.3, 0.33, 0.35]),
+                    _ => (0.12, 0.14, 3.0, [0.25, 0.22, 0.2]),
+                };
+                if self.rng.next() > rate * dt {
+                    continue;
+                }
+                let base = v3(f64::from(p[0]), f64::from(p[1]), f64::from(p[2]));
+                let x = base + v3(self.rng.range(0.25, 0.75), if kind == 5 { 1.0 } else { 0.6 }, self.rng.range(0.25, 0.75));
+                let v = v3(self.rng.range(-0.1, 0.1), self.rng.range(0.8, 1.4), self.rng.range(-0.1, 0.1));
+                let p = Puff::new(FxKind::Smoke, x, v, size * self.rng.range(0.8, 1.2), life * self.rng.range(0.8, 1.2), from, [0.62, 0.62, 0.63], &mut self.rng);
+                self.puff(p);
+            }
+        }
+        // The puffs.
+        let mut i = 0;
+        while i < self.puffs.len() {
+            let p = &mut self.puffs[i];
+            p.age += dt;
+            if p.age >= p.life {
+                self.puffs.swap_remove(i);
+                continue;
+            }
+            match p.kind {
+                FxKind::Smoke => {
+                    // Warm smoke rises and slows; the wind takes it, more the higher it gets.
+                    let lift = 1.6 * (1.0 - p.age / p.life);
+                    let pull = (wind - v3(p.v.x, 0.0, p.v.z)) * (0.6 * dt);
+                    p.v = p.v + pull + v3(0.0, lift * dt, 0.0);
+                    p.v = p.v * (1.0 - 1.2 * dt).max(0.0);
+                    let next = p.x + p.v * dt;
+                    if solid(world, next + v3(0.0, p.size, 0.0)) {
+                        // Under a ceiling it spreads sideways.
+                        p.v = v3(p.v.x * 1.2 + (next.x - next.x.floor() - 0.5) * 0.3, -0.05, p.v.z * 1.2 + (next.z - next.z.floor() - 0.5) * 0.3);
+                    } else {
+                        p.x = next;
+                    }
+                }
+                FxKind::Flame => {
+                    p.v = p.v * (1.0 - 3.0 * dt).max(0.0) + v3(0.0, 1.5 * dt, 0.0);
+                    p.x = p.x + p.v * dt;
+                }
+                FxKind::Spark => {
+                    p.v.y -= g * dt;
+                    p.v = p.v * (1.0 - 0.4 * dt);
+                    let next = p.x + p.v * dt;
+                    if solid(world, next) {
+                        // Bounce off whichever side it came through.
+                        for k in 0..3 {
+                            let mut probe = p.x;
+                            probe.set(k, next.get(k));
+                            if solid(world, probe) {
+                                let vk = p.v.get(k);
+                                p.v.set(k, -vk * 0.35);
+                            }
+                        }
+                        p.v = v3(p.v.x * 0.7, p.v.y, p.v.z * 0.7);
+                    } else {
+                        p.x = next;
+                    }
+                }
+            }
+            i += 1;
+        }
+        // The footprints fade; the ropes and capes nobody draws any more are forgotten.
+        let life = 30.0;
+        self.prints.retain_mut(|p| {
+            p.age += dt;
+            p.age < life
+        });
+        self.ropes.retain(|r| frame.saturating_sub(r.seen) < 30);
+        self.capes.retain(|_, c| frame.saturating_sub(c.seen) < 60);
+    }
+
+    /// The blasts of this frame throw their blocks. Called with the pieces' physics.
+    pub fn blow(&mut self, physics: &mut Physics, st: &Settings) {
+        for (blast, blocks) in std::mem::take(&mut self.pending) {
+            if blocks.is_empty() {
+                continue;
+            }
+            // Big blasts make fewer pieces per block, so the scene stays light.
+            let per = (st.pieces_per_block() / 2).clamp(2, 6);
+            let per = if blocks.len() > 120 { (per / 2).max(1) } else { per };
+            for a in blocks {
+                physics.spawn_blown(&a.boxes, a.pos, a.uv, a.tint, per, &blast, st.lifetime());
+            }
+        }
+    }
+
+    pub fn emit(&self, camera: V3, white: [f32; 4], world: &dyn World, out: &mut Vec<Vertex>) {
+        for p in &self.puffs {
+            let t = (p.age / p.life).clamp(0.0, 1.0);
+            let half = p.size * p.scale();
+            if half <= 0.005 {
+                continue;
+            }
+            let color = abgr(mix3(p.from, p.to, t));
+            let spin = p.q.mul(Quat::axis_angle(p.w.norm(), p.w.len() * p.age)).normalize();
+            let (light, shaded) = match p.kind {
+                FxKind::Smoke => (world.light(floor(p.x.x), floor(p.x.y), floor(p.x.z)), true),
+                _ => (GLOW, false),
+            };
+            cube(p.x - camera, half, spin, white, color, light, shaded, out);
+        }
+        for f in &self.prints {
+            let t = (f.age / 30.0).clamp(0.0, 1.0);
+            // From a pressed, shaded print to the snow around it.
+            let color = abgr(mix3([0.7, 0.75, 0.82], [0.95, 0.97, 1.0], t * t));
+            let light = world.light(floor(f.x.x), floor(f.x.y + 0.1), floor(f.x.z));
+            let (s, c) = f.yaw.sin_cos();
+            let fwd = v3(-s, 0.0, c);
+            let side = v3(c, 0.0, s);
+            let at = f.x - camera;
+            let rect = |center: f64, half_l: f64, half_w: f64| -> [V3; 4] {
+                let m = at + fwd * center;
+                [m - fwd * half_l - side * half_w, m - fwd * half_l + side * half_w, m + fwd * half_l + side * half_w, m + fwd * half_l - side * half_w]
+            };
+            quad(rect(0.06, 0.1, 0.075), white, color, light, out);
+            quad(rect(-0.13, 0.055, 0.065), white, color, light, out);
+        }
+    }
+
+    /// The player stands at `feet` (yaw in degrees), on snow whose top is `top`, or not on snow.
+    pub fn footstep(&mut self, feet: V3, yaw: f64, top: Option<f64>) {
+        let Some(top) = top else {
+            self.last_step = None;
+            return;
+        };
+        let here = v3(feet.x, top, feet.z);
+        let Some(last) = self.last_step else {
+            self.last_step = Some(here);
+            return;
+        };
+        let d = v3(here.x - last.x, 0.0, here.z - last.z);
+        if d.len() < 0.55 {
+            return;
+        }
+        if d.len() > 3.0 {
+            self.last_step = Some(here);
+            return;
+        }
+        self.last_step = Some(here);
+        self.left = !self.left;
+        let r = yaw.to_radians();
+        let (s, c) = r.sin_cos();
+        let side = v3(c, 0.0, s) * if self.left { -0.13 } else { 0.13 };
+        self.prints.push(Print { x: here + side + v3(0.0, 0.004, 0.0), yaw: r, age: 0.0 });
+        if self.prints.len() > 240 {
+            self.prints.remove(0);
+        }
+    }
+
+    /// A rope from `a` to `b` this frame (an id-less match against last frame's ropes of the same
+    /// `group`): sags under gravity, sways in the wind, lies on blocks. Returns its points.
+    #[allow(clippy::too_many_arguments)]
+    pub fn rope(&mut self, group: u8, a: V3, b: V3, slack: f64, dt: f64, g: f64, wind: V3, world: &dyn World) -> Vec<V3> {
+        let frame = self.frame;
+        let dist = (b - a).len();
+        let n = ((dist * 3.0).round() as usize).clamp(8, 28);
+        let best = self
+            .ropes
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.group == group && r.seen != frame + 1 && r.pts.len() == n + 1)
+            .map(|(i, r)| (i, (r.pts[0] - a).len() + (r.pts[n] - b).len()))
+            .filter(|(_, d)| *d < 2.5)
+            .fold(None, |acc: Option<(usize, f64)>, x| if acc.is_none_or(|y| x.1 < y.1) { Some(x) } else { acc });
+        let i = match best {
+            Some((i, _)) => i,
+            None => {
+                let pts: Vec<V3> = (0..=n).map(|k| a + (b - a) * (k as f64 / n as f64)).collect();
+                self.ropes.push(Rope { prev: pts.clone(), pts, seen: frame + 1, group });
+                self.ropes.len() - 1
+            }
+        };
+        let r = &mut self.ropes[i];
+        r.seen = frame + 1;
+        let rest = dist * (1.0 + slack) / n as f64;
+        let steps = 3;
+        let h = dt.clamp(0.0, 0.05) / steps as f64;
+        for _ in 0..steps {
+            for k in 1..n {
+                let p = r.pts[k];
+                let vel = (p - r.prev[k]) * 0.985;
+                r.prev[k] = p;
+                r.pts[k] = p + vel + (v3(0.0, -g * 0.6, 0.0) + wind * 0.4) * (h * h);
+            }
+            r.pts[0] = a;
+            r.pts[n] = b;
+            for it in 0..8 {
+                for k in 0..n {
+                    let (p, q) = (r.pts[k], r.pts[k + 1]);
+                    let d = q - p;
+                    let l = d.len();
+                    if l <= rest || l < 1e-9 {
+                        continue;
+                    }
+                    let corr = d * ((l - rest) / l);
+                    let (wa, wb) = (if k == 0 { 0.0 } else { 1.0 }, if k + 1 == n { 0.0 } else { 1.0 });
+                    let sum = wa + wb;
+                    if sum == 0.0 {
+                        continue;
+                    }
+                    r.pts[k] = p + corr * (wa / sum);
+                    r.pts[k + 1] = q - corr * (wb / sum);
+                }
+                // Out of the blocks, every other pass, so the length cannot pull it back in.
+                if it % 2 == 1 {
+                    for k in 1..n {
+                        push_out(world, &mut r.pts[k], &mut r.prev[k]);
+                    }
+                }
+            }
+        }
+        r.pts.clone()
+    }
+}
+
+/// Moves point `p` out of the blocks it is in, and takes away its speed into them (`prev` holds
+/// last step's place, so the speed is `p - prev`), with some friction along the surface.
+fn push_out(world: &dyn World, p: &mut V3, prev: &mut V3) {
+    for _ in 0..3 {
+        let Some((n, depth)) = penetration(world, *p, *prev, None) else { return };
+        *p = *p + n * depth;
+        let v = *p - *prev;
+        let vn = v.dot(n);
+        let along = v - n * vn;
+        let v = along * 0.6 + n * vn.max(0.0);
+        *prev = *p - v;
+    }
+}
+
+fn in_blast(b: &Blast, pos: [i32; 3]) -> bool {
+    let c = v3(f64::from(pos[0]) + 0.5, f64::from(pos[1]) + 0.5, f64::from(pos[2]) + 0.5);
+    (c - b.center).len() <= b.radius * 1.6 + 1.0
+}
+
+impl Physics {
+    /// A block blown out of an explosion: a few pieces thrown away from its center.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_blown(&mut self, boxes: &[[f64; 6]], pos: [i32; 3], uv: [f32; 4], tint: u32, per: usize, blast: &Blast, life: f64) {
+        let total: f64 = boxes.iter().map(|b| (b[3] - b[0]) * (b[4] - b[1]) * (b[5] - b[2])).sum();
+        if total <= 1e-6 {
+            return;
+        }
+        let o = v3(f64::from(pos[0]), f64::from(pos[1]), f64::from(pos[2]));
+        let color = tint_color(tint);
+        let mut bodies = Vec::new();
+        for b in boxes {
+            let vol = (b[3] - b[0]) * (b[4] - b[1]) * (b[5] - b[2]);
+            let n = ((per as f64 * vol / total).round() as usize).max(1);
+            for piece in split_box(*b, n, &mut self.rng) {
+                let (c, h, verts) = box_mesh(piece, uv, color);
+                let at = o + c;
+                let mut body = Body::new(at, Quat::IDENTITY, h, verts);
+                let d = at - blast.center;
+                let dist = d.len().max(0.3);
+                let dir = (d * (1.0 / dist) + self.rng.unit() * 0.35).norm();
+                let power = (1.0 - dist / (blast.radius * 1.6 + 1.0)).clamp(0.15, 1.0);
+                let speed = (4.0 + blast.radius * 2.2) * power * self.rng.range(0.6, 1.2);
+                let up = self.rng.range(2.0, 5.0) * power + speed * 0.3;
+                body.v = dir * speed.min(13.0) + v3(0.0, up, 0.0);
+                body.w = self.rng.unit() * self.rng.range(3.0, 12.0);
+                bodies.push(body);
+            }
+        }
+        let life = life + self.rng.range(0.0, 2.0);
+        self.add(bodies, Vec::new(), life, None);
+    }
+
+    /// Pushes the pieces (of objects from `from` on) near a blast away from it.
+    pub fn blast(&mut self, center: V3, reach: f64, strength: f64, from: usize) {
+        for oi in from..self.objects.len() {
+            let o = &mut self.objects[oi];
+            let mut hit = false;
+            for b in &mut self.bodies[o.first..o.first + o.count] {
+                let d = b.x - center;
+                let l = d.len();
+                if l >= reach {
+                    continue;
+                }
+                let k = (1.0 - l / reach) * strength * 12.0;
+                b.v = b.v + d.norm() * k + v3(0.0, k * 0.4, 0.0);
+                b.w = b.w + self.rng.unit() * k;
+                hit = true;
+            }
+            if hit {
+                o.sleeping = false;
+                o.still = 0.0;
+            }
+        }
+    }
+}
+
+// --- What the hooks call ----------------------------------------------------------------------
+
+/// Whether a part of the mod is on at all (the mod itself and the setting).
+fn part_on(f: impl Fn(&Settings) -> bool) -> bool {
+    ENABLED.load(Ordering::Relaxed) && f(&settings())
+}
+
+pub fn explosions_on() -> bool {
+    part_on(|s| s.explosions)
+}
+
+pub fn smoke_on() -> bool {
+    part_on(|s| s.smoke)
+}
+
+pub fn snow_on() -> bool {
+    part_on(|s| s.snow)
+}
+
+pub fn ropes_on() -> bool {
+    part_on(|s| s.ropes)
+}
+
+pub fn capes_on() -> bool {
+    part_on(|s| s.capes)
+}
+
+/// The explosion packet: a blast at `center` of `radius`.
+pub fn explosion(center: [f64; 3], radius: f32) {
+    if !explosions_on() {
+        return;
+    }
+    with(|s| {
+        let c = v3(center[0], center[1], center[2]);
+        s.env.explode(c, f64::from(radius));
+        // Pieces already lying around are thrown too.
+        s.physics.blast(c, f64::from(radius) * 2.5, 0.8, 0);
+    });
+}
+
+/// A block that just turned to air from the server: its outline (block space), sprite and tint.
+pub fn block_aired(pos: [i32; 3], boxes: &[[f64; 6]], uv: [f32; 4], tint: u32) {
+    if !explosions_on() || boxes.is_empty() {
+        return;
+    }
+    with(|s| {
+        let at = s.env.clock;
+        s.env.aired(Aired { pos, boxes: boxes.to_vec(), uv, tint, at })
+    });
+}
+
+/// Blows away this frame's blocks of explosions. Called from `frame` before the step.
+fn blow_pending(s: &mut State, st: &Settings) {
+    let State { env, physics, .. } = s;
+    env.blow(physics, st);
+}
+
+/// Which layer of blocks around the camera the hook should look through for fire this frame:
+/// `(y, x0, x1, z0, z1)`, all inclusive. A different layer each frame, 25 layers in turn.
+pub fn scan_layer(camera: [f64; 3]) -> (i32, i32, i32, i32, i32) {
+    with(|s| {
+        s.env.scan = (s.env.scan + 1) % 25;
+        let (x, y, z) = (floor(camera[0]), floor(camera[1]), floor(camera[2]));
+        (y - 12 + s.env.scan, x - 20, x + 20, z - 20, z + 20)
+    })
+}
+
+/// What the hook found on layer `y`: fire (1), soul fire (2), a lit campfire (3), a lit soul
+/// campfire (4), open lava (5).
+pub fn scan_found(y: i32, found: &[([i32; 3], u8)]) {
+    with(|s| {
+        s.env.emitters.retain(|p, _| p[1] != y);
+        for &(p, k) in found.iter().take(400) {
+            if s.env.emitters.len() >= 600 {
+                break;
+            }
+            s.env.emitters.insert(p, k);
+        }
+    });
+}
+
+/// The player's feet this frame and the top of the snow they stand on (None: not on snow).
+pub fn footstep(feet: [f64; 3], yaw: f32, top: Option<f64>) {
+    if !snow_on() {
+        return;
+    }
+    with(|s| s.env.footstep(v3(feet[0], feet[1], feet[2]), f64::from(yaw), top));
+}
+
+/// The points of a rope (lead: group 0, fishing line: group 1) between `a` and `b` this frame.
+pub fn rope(group: u8, a: [f64; 3], b: [f64; 3], slack: f64, world: &dyn World) -> Vec<[f64; 3]> {
+    let st = settings();
+    with(|s| {
+        let dt = s.last_dt;
+        let wind = wind_at(s.env.clock, st.wind());
+        let pts = s.env.rope(group, v3(a[0], a[1], a[2]), v3(b[0], b[1], b[2]), slack, dt, st.gravity(), wind, world);
+        pts.iter().map(|p| [p.x, p.y, p.z]).collect()
+    })
+}
+
+/// Leads: the lead geometry the game drew this frame (`drawn`, camera-relative) is replaced by
+/// ropes. Each vanilla lead is 384 vertices with zero normals, the knots come after with real
+/// normals and are kept as they are.
+pub fn leads(drawn: &[Vertex], camera: [f64; 3], world: &dyn World, out: &mut Vec<Vertex>) {
+    const PER: usize = 384;
+    let cam = v3(camera[0], camera[1], camera[2]);
+    let mut i = 0;
+    while i < drawn.len() {
+        if drawn[i].normal != [0; 4] || i + PER > drawn.len() || drawn[i..i + PER].iter().any(|v| v.normal != [0; 4]) {
+            out.push(drawn[i]);
+            i += 1;
+            continue;
+        }
+        let lead = &drawn[i..i + PER];
+        i += PER;
+        let mid = |a: &Vertex, b: &Vertex| v3(f64::from(a.pos[0] + b.pos[0]) * 0.5, f64::from(a.pos[1] + b.pos[1]) * 0.5, f64::from(a.pos[2] + b.pos[2]) * 0.5);
+        // Step 0's first corners and step 23's last ones (quad order a0 b0 b1 a1).
+        let start = mid(&lead[0], &lead[1]) + cam;
+        let end = mid(&lead[23 * 8 + 2], &lead[23 * 8 + 3]) + cam;
+        let pts = rope(0, [start.x, start.y, start.z], [end.x, end.y, end.z], 0.07, world);
+        let pts: Vec<V3> = pts.iter().map(|p| v3(p[0], p[1], p[2]) - cam).collect();
+        let (c0, c1) = (lead[0].color, lead[8].color);
+        let (light, uv) = (lead[0].light, lead[0].uv);
+        tube(&pts, 0.025, [c0, c1], light, uv, out);
+    }
+}
+
+/// A square tube of `half` thickness along `pts`, its segments in alternating colours.
+fn tube(pts: &[V3], half: f64, colors: [u32; 2], light: u32, uv: [f32; 2], out: &mut Vec<Vertex>) {
+    for (k, w) in pts.windows(2).enumerate() {
+        let d = (w[1] - w[0]).norm();
+        let side = {
+            let s = d.cross(v3(0.0, 1.0, 0.0));
+            if s.len() < 1e-6 { v3(1.0, 0.0, 0.0) } else { s.norm() }
+        };
+        let up = side.cross(d).norm();
+        let ring = |p: V3| [p + side * half + up * half, p - side * half + up * half, p - side * half - up * half, p + side * half - up * half];
+        let (ra, rb) = (ring(w[0]), ring(w[1]));
+        let color = colors[k % 2];
+        for f in 0..4 {
+            let g = (f + 1) % 4;
+            for order in [[ra[f], ra[g], rb[g], rb[f]], [rb[f], rb[g], ra[g], ra[f]]] {
+                for p in order {
+                    out.push(Vertex {
+                        pos: [p.x as f32, p.y as f32, p.z as f32],
+                        uv,
+                        layer: 0,
+                        color,
+                        light,
+                        normal: [0; 4],
+                        glint_uv: [0.0, 0.0],
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// A cape as cloth. `rest` is the cape the game would draw hanging straight (camera-relative,
+/// the last frame's camera), `pivot` where it hangs from (the neck). Draws the cloth into `out`
+/// and returns true, or returns false when the game should draw its own (not a cape we know how
+/// to read, or a second drawing of the same player this frame, as in the inventory).
+pub fn cape(id: u32, rest: &[Vertex], pivot: [f32; 3], out: &mut Vec<Vertex>) -> bool {
+    if !capes_on() || rest.len() < 24 || rest.len() % 4 != 0 {
+        return false;
+    }
+    let st = settings();
+    with(|s| {
+        let cam = s.camera;
+        let dt = s.last_dt;
+        let frame = s.frame;
+        let wind = wind_at(s.env.clock, st.wind());
+        let g = st.gravity();
+        let pos = |v: &Vertex| v3(f64::from(v.pos[0]), f64::from(v.pos[1]), f64::from(v.pos[2]));
+        // The two biggest faces: the outside (away from the neck) and the inside.
+        let mut quads: Vec<(usize, f64, V3)> = rest
+            .chunks(4)
+            .enumerate()
+            .map(|(i, q)| {
+                let (a, b, c) = (pos(&q[0]), pos(&q[1]), pos(&q[2]));
+                let n = (b - a).cross(c - a);
+                let center = (pos(&q[0]) + pos(&q[1]) + pos(&q[2]) + pos(&q[3])) * 0.25;
+                (i, n.len(), center)
+            })
+            .collect();
+        quads.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let piv = v3(f64::from(pivot[0]), f64::from(pivot[1]), f64::from(pivot[2]));
+        let (qa, qb) = (quads[0], quads[1]);
+        let (outer, inner) = if (qa.2 - piv).len() >= (qb.2 - piv).len() { (qa, qb) } else { (qb, qa) };
+        let oq = &rest[outer.0 * 4..outer.0 * 4 + 4];
+        let iq = &rest[inner.0 * 4..inner.0 * 4 + 4];
+        // The outside's corners: the two nearest the neck are the top.
+        let mut idx = [0usize, 1, 2, 3];
+        idx.sort_by(|&a, &b| (pos(&oq[a]) - piv).len().partial_cmp(&(pos(&oq[b]) - piv).len()).unwrap_or(std::cmp::Ordering::Equal));
+        // The two tops are equally far from the neck; take them in the face's own order, so the
+        // cloth's left and right never swap from one frame to the next.
+        let (t0, t1) = if (idx[0] + 1) % 4 == idx[1] { (idx[0], idx[1]) } else { (idx[1], idx[0]) };
+        // Each top corner's bottom corner is the one next to it around the face.
+        let next = |a: usize| if (a + 1) % 4 == t0 || (a + 1) % 4 == t1 { (a + 3) % 4 } else { (a + 1) % 4 };
+        let (b0, b1) = (next(t0), next(t1));
+        let corner = |k: usize| pos(&oq[k]) + cam;
+        let (tl, tr, bl, br) = (corner(t0), corner(t1), corner(b0), corner(b1));
+        let width = (tr - tl).len();
+        let height = (bl - tl).len();
+        if width < 0.05 || height < 0.05 {
+            return false;
+        }
+        let into = (inner.2 - outer.2).norm();
+        let grid_rest = |r: usize, c: usize| {
+            let (u, v) = (c as f64 / (CAPE_W - 1) as f64, r as f64 / (CAPE_H - 1) as f64);
+            let top = tl + (tr - tl) * u;
+            let bottom = bl + (br - bl) * u;
+            top + (bottom - top) * v
+        };
+        // A second drawing in the same frame somewhere else (the inventory's player): not ours.
+        if let Some(c) = s.env.capes.get(&id)
+            && c.seen == frame
+            && (c.pts[0] - tl).len() > 1.5
+        {
+            return false;
+        }
+        let fresh = s.env.capes.get(&id).is_none_or(|c| (c.pts[0] - tl).len() > 3.0 || c.pts.len() != CAPE_W * CAPE_H);
+        if fresh {
+            let pts: Vec<V3> = (0..CAPE_H).flat_map(|r| (0..CAPE_W).map(move |c| (r, c))).map(|(r, c)| grid_rest(r, c)).collect();
+            s.env.capes.insert(id, Cloth { prev: pts.clone(), pts, seen: 0, width, height });
+        }
+        let cl = s.env.capes.get_mut(&id).expect("cape just made");
+        if cl.seen != frame {
+            cl.seen = frame;
+            cl.width = width;
+            cl.height = height;
+            let (dx, dy) = (width / (CAPE_W - 1) as f64, height / (CAPE_H - 1) as f64);
+            let steps = 3;
+            let h = dt.clamp(0.0, 0.05) / steps as f64;
+            let at = |r: usize, c: usize| r * CAPE_W + c;
+            let top_mid = (tl + tr) * 0.5;
+            for _ in 0..steps {
+                for r in 1..CAPE_H {
+                    for c in 0..CAPE_W {
+                        let k = at(r, c);
+                        let p = cl.pts[k];
+                        let vel = (p - cl.prev[k]) * 0.96;
+                        cl.prev[k] = p;
+                        // A cloth catches the wind; a little flutter so it never hangs dead.
+                        let flutter = ((self_hash(id) + r as f64 * 0.7 + c as f64 * 0.3) + frame as f64 * 0.21).sin() * 0.25;
+                        let force = v3(0.0, -g * 0.5, 0.0) + wind * (1.0 + flutter);
+                        cl.pts[k] = p + vel + force * (h * h);
+                    }
+                }
+                for c in 0..CAPE_W {
+                    cl.pts[at(0, c)] = grid_rest(0, c);
+                }
+                for _ in 0..6 {
+                    for r in 0..CAPE_H {
+                        for c in 0..CAPE_W {
+                            if c + 1 < CAPE_W {
+                                link(&mut cl.pts, at(r, c), at(r, c + 1), dx, r == 0, r == 0);
+                            }
+                            if r + 1 < CAPE_H {
+                                link(&mut cl.pts, at(r, c), at(r + 1, c), dy, r == 0, false);
+                            }
+                            if r + 2 < CAPE_H {
+                                link(&mut cl.pts, at(r, c), at(r + 2, c), dy * 2.0, r == 0, false);
+                            }
+                            if r + 1 < CAPE_H && c + 1 < CAPE_W {
+                                let diag = (dx * dx + dy * dy).sqrt();
+                                link(&mut cl.pts, at(r, c), at(r + 1, c + 1), diag, r == 0, false);
+                                link(&mut cl.pts, at(r, c + 1), at(r + 1, c), diag, r == 0, false);
+                            }
+                        }
+                    }
+                    // Not through the player's back.
+                    for k in CAPE_W..cl.pts.len() {
+                        let d = (cl.pts[k] - top_mid).dot(into);
+                        if d > -0.01 {
+                            cl.pts[k] = cl.pts[k] - into * (d + 0.01);
+                        }
+                    }
+                }
+            }
+        }
+        // Draw: the outside with the outer face's texture, the inside with the inner's.
+        let uv_of = |q: &[Vertex], k: usize| [f64::from(q[k].uv[0]), f64::from(q[k].uv[1])];
+        let near = |p: V3| {
+            (0..4)
+                .min_by(|&a, &b| (pos(&iq[a]) - p).len().partial_cmp(&(pos(&iq[b]) - p).len()).unwrap_or(std::cmp::Ordering::Equal))
+                .unwrap_or(0)
+        };
+        let o_uv = [uv_of(oq, t0), uv_of(oq, t1), uv_of(oq, b0), uv_of(oq, b1)];
+        let i_uv = [
+            uv_of(iq, near(pos(&oq[t0]))),
+            uv_of(iq, near(pos(&oq[t1]))),
+            uv_of(iq, near(pos(&oq[b0]))),
+            uv_of(iq, near(pos(&oq[b1]))),
+        ];
+        let bilerp = |uv: &[[f64; 2]; 4], r: usize, c: usize| -> [f32; 2] {
+            let (u, v) = (c as f64 / (CAPE_W - 1) as f64, r as f64 / (CAPE_H - 1) as f64);
+            let top = [uv[0][0] + (uv[1][0] - uv[0][0]) * u, uv[0][1] + (uv[1][1] - uv[0][1]) * u];
+            let bot = [uv[2][0] + (uv[3][0] - uv[2][0]) * u, uv[2][1] + (uv[3][1] - uv[2][1]) * u];
+            [(top[0] + (bot[0] - top[0]) * v) as f32, (top[1] + (bot[1] - top[1]) * v) as f32]
+        };
+        let base = rest[0];
+        let pts = &cl.pts;
+        let at = |r: usize, c: usize| pts[r * CAPE_W + c];
+        // The cloth's normal at each point, pointing outward (away from the back).
+        let normal = |r: usize, c: usize| {
+            let du = at(r, (c + 1).min(CAPE_W - 1)) - at(r, c.saturating_sub(1));
+            let dv = at((r + 1).min(CAPE_H - 1), c) - at(r.saturating_sub(1), c);
+            let n = du.cross(dv).norm();
+            if n.dot(into) > 0.0 { -n } else { n }
+        };
+        let pack = |x: f64| (x.clamp(-1.0, 1.0) * 127.0) as i8;
+        let thick = 0.06;
+        let mut push = |p: V3, n: V3, uv: [f32; 2]| {
+            let p = p - cam;
+            out.push(Vertex {
+                pos: [p.x as f32, p.y as f32, p.z as f32],
+                uv,
+                layer: base.layer,
+                color: base.color,
+                light: base.light,
+                normal: [pack(n.x), pack(n.y), pack(n.z), base.normal[3]],
+                glint_uv: base.glint_uv,
+            });
+        };
+        for r in 0..CAPE_H - 1 {
+            for c in 0..CAPE_W - 1 {
+                let cells = [(r, c), (r, c + 1), (r + 1, c + 1), (r + 1, c)];
+                // Outward winding: check against the normal.
+                let (p0, p1, p2) = (at(r, c), at(r, c + 1), at(r + 1, c + 1));
+                let n0 = normal(r, c);
+                let out_order = if (p1 - p0).cross(p2 - p0).dot(n0) >= 0.0 { [0, 1, 2, 3] } else { [3, 2, 1, 0] };
+                for k in out_order {
+                    let (rr, cc) = cells[k];
+                    push(at(rr, cc), normal(rr, cc), bilerp(&o_uv, rr, cc));
+                }
+                let in_order = [out_order[3], out_order[2], out_order[1], out_order[0]];
+                for k in in_order {
+                    let (rr, cc) = cells[k];
+                    let n = normal(rr, cc);
+                    push(at(rr, cc) - n * thick, -n, bilerp(&i_uv, rr, cc));
+                }
+            }
+        }
+        true
+    })
+}
+
+fn self_hash(id: u32) -> f64 {
+    f64::from(id.wrapping_mul(2_654_435_761) % 1000) * 0.01
+}
+
+/// Keeps points `a` and `b` no further apart than `len` (cloth stretches little and folds freely).
+fn link(pts: &mut [V3], a: usize, b: usize, len: f64, a_pinned: bool, b_pinned: bool) {
+    let d = pts[b] - pts[a];
+    let l = d.len();
+    if l < 1e-9 {
+        return;
+    }
+    let (wa, wb) = (if a_pinned { 0.0 } else { 1.0 }, if b_pinned { 0.0 } else { 1.0 });
+    let sum = wa + wb;
+    if sum == 0.0 {
+        return;
+    }
+    // Pulled back hard when stretched, softly when squeezed.
+    let k = if l > len { 1.0 } else { 0.15 };
+    let corr = d * ((l - len) / l * k);
+    pts[a] = pts[a] + corr * (wa / sum);
+    pts[b] = pts[b] - corr * (wb / sum);
+}

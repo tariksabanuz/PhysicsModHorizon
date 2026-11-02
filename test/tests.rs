@@ -241,13 +241,18 @@ fn pieces_sink_slowly_in_water() {
 fn settings_round_trip_and_cycle() {
     let mut s = Settings::default();
     s.click(1);
-    s.click(3);
+    s.click(9);
     s.click(0);
+    s.click(4);
+    s.click(8);
     let t = Settings::from_text(&s.to_text());
     assert_eq!(s, t);
-    assert_eq!(t.labels().len(), 7);
+    assert_eq!(t.labels().len(), 13);
     assert!(t.labels()[1].ends_with("Fall apart"));
-    assert!(s.click(6));
+    assert!(t.labels()[4].ends_with("Off"));
+    assert!(t.labels()[8].ends_with("Strong"));
+    assert!(!t.smoke && t.explosions);
+    assert!(s.click(12));
 }
 
 #[test]
@@ -323,4 +328,416 @@ fn dump_scenes() {
     }
     out.push(']');
     std::fs::write("/tmp/hp_dump.json", out).unwrap();
+}
+
+// --- 0.2.0 ----------------------------------------------------------------------------------
+
+fn stone(pos: [i32; 3], at: f64) -> Aired {
+    Aired { pos, boxes: vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]], uv: [0.0, 0.0, 0.1, 0.1], tint: 0xFFFFFF, at }
+}
+
+#[test]
+fn an_explosion_throws_its_blocks_outward() {
+    let w = Flat { pillar: None, water_above: false };
+    let mut env = Env::default();
+    let mut p = Physics::default();
+    let st = Settings::default();
+    let center = v3(0.5, 64.5, 0.5);
+    // Two blocks went to air just before the packet, one after; one far away is not the blast's.
+    env.aired(stone([2, 64, 0], 0.0));
+    env.aired(stone([40, 64, 0], 0.0));
+    env.explode(center, 4.0);
+    env.aired(stone([-2, 64, 1], 0.0));
+    assert!(!env.puffs.is_empty(), "no fireball, sparks or smoke");
+    env.blow(&mut p, &st);
+    assert_eq!(p.objects.len(), 2, "two blocks belong to the blast");
+    for b in &p.bodies {
+        let out = v3(b.x.x - center.x, 0.0, b.x.z - center.z).norm();
+        assert!(b.v.dot(out) > 1.0, "a piece is not thrown outward: {:?}", b.v);
+        assert!(b.v.y > -1.0, "thrown down: {:?}", b.v);
+    }
+    let up = p.bodies.iter().map(|b| b.v.y).sum::<f64>() / p.bodies.len() as f64;
+    assert!(up > 1.0, "not thrown up: {up}");
+    // They land and stay above the floor.
+    run(&mut p, &w, 5.0);
+    for b in &p.bodies {
+        assert!(b.x.y > 63.9, "fell through: {}", b.x.y);
+    }
+    // Far from the start.
+    assert!(p.bodies.iter().any(|b| (b.x - center).len() > 3.0));
+}
+
+#[test]
+fn smoke_rises_and_drifts_with_the_wind_sparks_bounce() {
+    let w = Flat { pillar: None, water_above: false };
+    let mut env = Env::default();
+    let st = Settings { wind: 2, ..Settings::default() };
+    env.explode(v3(0.5, 65.0, 0.5), 3.0);
+    let start: Vec<Puff> = env.puffs.clone();
+    let mut t = 0.0;
+    while t < 2.0 {
+        env.step(1.0 / 60.0, v3(0.5, 66.0, 0.5), 1, &st, &w);
+        t += 1.0 / 60.0;
+    }
+    let smoke: Vec<&Puff> = env.puffs.iter().filter(|p| p.kind == FxKind::Smoke).collect();
+    assert!(!smoke.is_empty());
+    let avg_y = smoke.iter().map(|p| p.x.y).sum::<f64>() / smoke.len() as f64;
+    let avg_y0 = start.iter().filter(|p| p.kind == FxKind::Smoke).map(|p| p.x.y).sum::<f64>()
+        / start.iter().filter(|p| p.kind == FxKind::Smoke).count() as f64;
+    assert!(avg_y > avg_y0 + 0.8, "smoke did not rise: {avg_y0} -> {avg_y}");
+    let wind = wind_at(env.clock, st.wind()).norm();
+    let drift = smoke.iter().map(|p| v3(p.v.x, 0.0, p.v.z).dot(wind)).sum::<f64>() / smoke.len() as f64;
+    assert!(drift > 0.2, "smoke does not move with the wind: {drift}");
+    for p in env.puffs.iter().filter(|p| p.kind == FxKind::Spark) {
+        assert!(p.x.y > 63.95, "a spark went through the floor: {}", p.x.y);
+    }
+    // Everything is gone after its life.
+    for _ in 0..600 {
+        env.step(1.0 / 60.0, v3(0.5, 66.0, 0.5), 1, &st, &w);
+    }
+    assert!(env.puffs.is_empty());
+}
+
+#[test]
+fn a_rope_sags_lies_on_the_ground_and_keeps_its_length() {
+    let w = Flat { pillar: None, water_above: false };
+    let mut env = Env::default();
+    let (a, b) = (v3(0.0, 65.0, 0.0), v3(6.0, 65.0, 0.0));
+    let mut pts = Vec::new();
+    for f in 0..240 {
+        env.step(1.0 / 60.0, a, f, &Settings::default(), &w);
+        pts = env.rope(0, a, b, 0.3, 1.0 / 60.0, 20.0, V3::default(), &w);
+    }
+    assert_eq!(env.ropes.len(), 1, "the rope is found again each frame");
+    let low = pts.iter().map(|p| p.y).fold(f64::MAX, f64::min);
+    assert!(low < 64.6, "no sag: {low}");
+    assert!(low > 63.95, "through the floor: {low} {:?}", pts.iter().map(|p| (p.x, p.y)).collect::<Vec<_>>());
+    let len: f64 = pts.windows(2).map(|w| (w[1] - w[0]).len()).sum();
+    assert!(len < 6.0 * 1.3 + 0.2 && len > 6.0, "length {len}");
+    // A light slack hangs, it does not touch the ground.
+    let mut env = Env::default();
+    for f in 0..240 {
+        env.step(1.0 / 60.0, a, f, &Settings::default(), &w);
+        pts = env.rope(0, a + v3(0.0, 2.0, 0.0), b + v3(0.0, 2.0, 0.0), 0.05, 1.0 / 60.0, 20.0, V3::default(), &w);
+    }
+    let low = pts.iter().map(|p| p.y).fold(f64::MAX, f64::min);
+    assert!(low < 66.95 && low > 65.5, "light sag: {low}");
+}
+
+#[test]
+fn footprints_alternate_on_snow_only() {
+    let mut env = Env::default();
+    for i in 0..60 {
+        env.footstep(v3(f64::from(i) * 0.1, 64.125, 0.0), -90.0, Some(64.125));
+    }
+    let n = env.prints.len();
+    assert!((9..=11).contains(&n), "{n} prints over 6 blocks");
+    let sides: Vec<f64> = env.prints.iter().map(|p| p.x.z).collect();
+    assert!(sides.windows(2).all(|w| (w[0] > 0.0) != (w[1] > 0.0)), "not left and right: {sides:?}");
+    assert!(env.prints.iter().all(|p| (p.x.y - 64.129).abs() < 1e-6));
+    for i in 60..120 {
+        env.footstep(v3(f64::from(i) * 0.1, 64.0, 0.0), -90.0, None);
+    }
+    assert_eq!(env.prints.len(), n);
+}
+
+/// The vertices of a cape box as the game would draw it hanging: 10 by 16 by 1 pixels behind a
+/// neck at `neck`, the outside facing +z (the player looks toward -z).
+fn cape_box(neck: V3) -> Vec<Vertex> {
+    let (w, h, d) = (10.0 / 16.0, 1.0, 1.0 / 16.0);
+    let lo = v3(neck.x - w / 2.0, neck.y - h, neck.z + 0.125);
+    let hi = v3(neck.x + w / 2.0, neck.y, neck.z + 0.125 + d);
+    let faces: [[V3; 4]; 6] = [
+        [v3(lo.x, lo.y, hi.z), v3(hi.x, lo.y, hi.z), v3(hi.x, hi.y, hi.z), v3(lo.x, hi.y, hi.z)],
+        [v3(hi.x, lo.y, lo.z), v3(lo.x, lo.y, lo.z), v3(lo.x, hi.y, lo.z), v3(hi.x, hi.y, lo.z)],
+        [v3(hi.x, lo.y, lo.z), v3(hi.x, hi.y, lo.z), v3(hi.x, hi.y, hi.z), v3(hi.x, lo.y, hi.z)],
+        [v3(lo.x, lo.y, hi.z), v3(lo.x, hi.y, hi.z), v3(lo.x, hi.y, lo.z), v3(lo.x, lo.y, lo.z)],
+        [v3(lo.x, hi.y, lo.z), v3(lo.x, hi.y, hi.z), v3(hi.x, hi.y, hi.z), v3(hi.x, hi.y, lo.z)],
+        [v3(lo.x, lo.y, hi.z), v3(lo.x, lo.y, lo.z), v3(hi.x, lo.y, lo.z), v3(hi.x, lo.y, hi.z)],
+    ];
+    let mut out = Vec::new();
+    for f in faces {
+        for (k, p) in f.iter().enumerate() {
+            out.push(Vertex {
+                pos: [p.x as f32, p.y as f32, p.z as f32],
+                uv: [k as f32 * 0.1, 0.5],
+                layer: 0,
+                color: 0xFFFF_FFFF,
+                light: 240,
+                normal: [0, 0, 127, 0],
+                glint_uv: [0.0, 0.0],
+            });
+        }
+    }
+    out
+}
+
+/// Global state: leads, ropes and capes in one test, so tests running side by side do not meet.
+#[test]
+fn capes_hang_as_cloth_and_leads_become_ropes() {
+    let w = Flat { pillar: None, water_above: false };
+    clear();
+    let neck = v3(0.0, 65.5, 0.0);
+    let mut out = Vec::new();
+    let mut frames = 0;
+    for _ in 0..100 {
+        out.clear();
+        assert!(cape(7, &cape_box(neck), [neck.x as f32, neck.y as f32, neck.z as f32], &mut out));
+        frame(0, [0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 1.0], &w, &mut Vec::new());
+        frames += 1;
+        std::thread::sleep(std::time::Duration::from_millis(16));
+    }
+    assert_eq!(frames, 100);
+    // 4 by 7 cells, both sides.
+    assert_eq!(out.len(), 4 * 7 * 2 * 4);
+    let ys: Vec<f32> = out.iter().map(|v| v.pos[1]).collect();
+    let low = ys.iter().cloned().fold(f32::MAX, f32::min);
+    assert!(low < 64.62 && low > 64.3, "the cape does not hang: {low}");
+    // Never in front of the back (z < 0.125 is inside the player).
+    assert!(out.iter().all(|v| v.pos[2] > 0.0), "the cape went through the player");
+    // The inventory's player drawn somewhere else in the same frame keeps the game's own cape.
+    assert!(cape(7, &cape_box(neck), [neck.x as f32, neck.y as f32, neck.z as f32], &mut Vec::new()));
+    assert!(!cape(7, &cape_box(neck + v3(50.0, 0.0, 0.0)), [50.0, 65.5, 0.0], &mut Vec::new()));
+
+    // A lead (384 zero-normal vertices from (0, 66, 0) to (5, 66, 0)) and a knot vertex after it.
+    let mut drawn = Vec::new();
+    for pass in 0..2 {
+        for step in 0..24 {
+            let _ = pass;
+            let x0 = 5.0 * step as f32 / 24.0;
+            let x1 = 5.0 * (step + 1) as f32 / 24.0;
+            for _ in 0..2 {
+                for (x, z) in [(x0, -0.02), (x0, 0.02), (x1, 0.02), (x1, -0.02)] {
+                    drawn.push(Vertex { pos: [x, 66.0, z], uv: [0.0, 0.0], layer: 0, color: 1, light: 2, normal: [0; 4], glint_uv: [0.0, 0.0] });
+                }
+            }
+        }
+    }
+    assert_eq!(drawn.len(), 384);
+    drawn.push(Vertex { pos: [9.0, 9.0, 9.0], uv: [0.0, 0.0], layer: 0, color: 3, light: 2, normal: [0, 127, 0, 0], glint_uv: [0.0, 0.0] });
+    let mut out = Vec::new();
+    for _ in 0..120 {
+        out.clear();
+        leads(&drawn, [0.0, 0.0, 0.0], &w, &mut out);
+        frame(0, [0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 1.0], &w, &mut Vec::new());
+        std::thread::sleep(std::time::Duration::from_millis(16));
+    }
+    assert!(out.iter().any(|v| v.color == 3), "the knot was lost");
+    let low = out.iter().filter(|v| v.color != 3).map(|v| v.pos[1]).fold(f32::MAX, f32::min);
+    assert!(low < 65.9 && low > 64.0, "the lead does not sag: {low}");
+    a_turning_cape_keeps_hanging();
+    clear();
+}
+
+// --- Previews (cargo-less: run the ignored test, then render_v2.py) ----------------------------
+
+fn box_faces(c: [V3; 8]) -> Vec<[V3; 4]> {
+    [[0, 2, 6, 4], [1, 3, 7, 5], [0, 1, 5, 4], [2, 3, 7, 6], [0, 1, 3, 2], [4, 5, 7, 6]]
+        .iter()
+        .map(|f| [c[f[0]], c[f[1]], c[f[2]], c[f[3]]])
+        .collect()
+}
+
+fn corners(x: V3, q: Quat, h: V3) -> [V3; 8] {
+    std::array::from_fn(|k| {
+        let l = v3(if k & 1 == 0 { -h.x } else { h.x }, if k & 2 == 0 { -h.y } else { h.y }, if k & 4 == 0 { -h.z } else { h.z });
+        x + q.rotate(l)
+    })
+}
+
+fn poly_json(polys: &[(Vec<V3>, [u8; 3])]) -> String {
+    let items: Vec<String> = polys
+        .iter()
+        .map(|(pts, c)| {
+            let p: Vec<String> = pts.iter().map(|p| format!("[{:.3},{:.3},{:.3}]", p.x, p.y, p.z)).collect();
+            format!("[[{}],[{},{},{}]]", p.join(","), c[0], c[1], c[2])
+        })
+        .collect();
+    format!("[{}]", items.join(","))
+}
+
+fn rgb(c: u32) -> [u8; 3] {
+    [(c & 255) as u8, (c >> 8 & 255) as u8, (c >> 16 & 255) as u8]
+}
+
+#[test]
+#[ignore]
+fn dump_v2() {
+    let w = Flat { pillar: None, water_above: false };
+    let mut scenes = Vec::new();
+    // 1. TNT in a mound of stone and dirt.
+    {
+        let center = v3(0.5, 64.5, 4.5);
+        let mut blocks = Vec::new();
+        for x in -3..=3 {
+            for z in 1..=7 {
+                for y in 64..=65 {
+                    let c = v3(f64::from(x) + 0.5, f64::from(y) + 0.5, f64::from(z) + 0.5);
+                    let d = (c - center).len();
+                    if d < 3.6 && !(y == 65 && d > 2.6) {
+                        blocks.push(([x, y, z], if y == 65 { 0x4A8A3Cu32 } else { 0x7D7D7D }, d));
+                    }
+                }
+            }
+        }
+        let mut env = Env::default();
+        let mut p = Physics::default();
+        let st = Settings { pieces: 2, ..Settings::default() };
+        let mut frames = Vec::new();
+        for f in 0..110 {
+            let mut polys: Vec<(Vec<V3>, [u8; 3])> = Vec::new();
+            if f < 15 {
+                for (b, c, _) in &blocks {
+                    let x = v3(f64::from(b[0]) + 0.5, f64::from(b[1]) + 0.5, f64::from(b[2]) + 0.5);
+                    for q in box_faces(corners(x, Quat::IDENTITY, v3(0.5, 0.5, 0.5))) {
+                        polys.push((q.to_vec(), [(c >> 16) as u8, (c >> 8 & 255) as u8, (c & 255) as u8]));
+                    }
+                }
+                let tnt = if f % 8 < 4 { [220, 60, 50] } else { [245, 240, 235] };
+                for q in box_faces(corners(center + v3(0.0, 1.0, 0.0), Quat::IDENTITY, v3(0.5, 0.5, 0.5))) {
+                    polys.push((q.to_vec(), tnt));
+                }
+            }
+            if f == 15 {
+                for (b, c, d) in &blocks {
+                    if *d < 3.2 {
+                        env.aired(Aired { pos: *b, boxes: vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]], uv: [0.0; 4], tint: *c, at: env.clock });
+                    }
+                }
+                env.explode(center + v3(0.0, 1.0, 0.0), 4.0);
+                env.blow(&mut p, &st);
+                blocks.retain(|b| b.2 >= 3.2);
+            }
+            if f >= 15 {
+                for (b, c, _) in &blocks {
+                    let x = v3(f64::from(b[0]) + 0.5, f64::from(b[1]) + 0.5, f64::from(b[2]) + 0.5);
+                    for q in box_faces(corners(x, Quat::IDENTITY, v3(0.5, 0.5, 0.5))) {
+                        polys.push((q.to_vec(), [(c >> 16) as u8, (c >> 8 & 255) as u8, (c & 255) as u8]));
+                    }
+                }
+            }
+            for b in &p.bodies {
+                let c = rgb(b.verts.first().map_or(0xFF7D7D7D, |v| v.color));
+                for q in box_faces(corners(b.x, b.q, b.half)) {
+                    polys.push((q.to_vec(), c));
+                }
+            }
+            for pf in &env.puffs {
+                let t = (pf.age / pf.life).clamp(0.0, 1.0);
+                let col = mix3(pf.from, pf.to, t);
+                let half = pf.size * pf.scale_pub();
+                let c = [(col[0] * 255.0) as u8, (col[1] * 255.0) as u8, (col[2] * 255.0) as u8];
+                for q in box_faces(corners(pf.x, Quat::IDENTITY, v3(half, half, half))) {
+                    polys.push((q.to_vec(), c));
+                }
+            }
+            frames.push(poly_json(&polys));
+            for _ in 0..2 {
+                p.step(1.0 / 60.0, 20.0, &w);
+                env.step(1.0 / 60.0, center, f, &st, &w);
+            }
+        }
+        scenes.push(format!("[{}]", frames.join(",")));
+    }
+    // 2. A player with a cape walks, stops and turns, holding a lead to a post.
+    {
+        clear();
+        let post = v3(4.5, 65.4, 6.5);
+        let mut frames = Vec::new();
+        for f in 0..150 {
+            let t = f as f64 / 30.0;
+            // Walk along x, then stand and turn.
+            let x = if t < 2.0 { -3.0 + 2.5 * t } else { 2.0 };
+            let yaw = if t < 3.0 { 0.0 } else { (t - 3.0) * 0.8 };
+            let feet = v3(x, 64.0, 3.0);
+            let (s, c) = yaw.sin_cos();
+            // The player faces +x at yaw 0; the back is toward -x.
+            let fwd = v3(c, 0.0, s);
+            let side = v3(-s, 0.0, c);
+            let neck = feet + v3(0.0, 1.5, 0.0);
+            // A cape box behind the neck (outer face away from the body).
+            let (w2, h, d) = (5.0 / 16.0, 1.0, 1.0 / 16.0);
+            let back = neck - fwd * 0.17;
+            let pt = |a: f64, b: f64, e: f64| back + side * a + v3(0.0, b, 0.0) - fwd * e;
+            let faces: [[V3; 4]; 6] = [
+                [pt(-w2, -h, d), pt(w2, -h, d), pt(w2, 0.0, d), pt(-w2, 0.0, d)],
+                [pt(w2, -h, 0.0), pt(-w2, -h, 0.0), pt(-w2, 0.0, 0.0), pt(w2, 0.0, 0.0)],
+                [pt(w2, -h, 0.0), pt(w2, 0.0, 0.0), pt(w2, 0.0, d), pt(w2, -h, d)],
+                [pt(-w2, -h, d), pt(-w2, 0.0, d), pt(-w2, 0.0, 0.0), pt(-w2, -h, 0.0)],
+                [pt(-w2, 0.0, 0.0), pt(-w2, 0.0, d), pt(w2, 0.0, d), pt(w2, 0.0, 0.0)],
+                [pt(-w2, -h, d), pt(-w2, -h, 0.0), pt(w2, -h, 0.0), pt(w2, -h, d)],
+            ];
+            let rest: Vec<Vertex> = faces
+                .iter()
+                .flat_map(|q| q.iter().map(|p| Vertex { pos: [p.x as f32, p.y as f32, p.z as f32], uv: [0.0; 2], layer: 0, color: 0xFFFF_FFFF, light: 240, normal: [0, 0, 127, 0], glint_uv: [0.0; 2] }).collect::<Vec<_>>())
+                .collect();
+            let mut out = Vec::new();
+            assert!(cape(1, &rest, [neck.x as f32, neck.y as f32, neck.z as f32], &mut out));
+            let hand = feet + v3(0.0, 0.9, 0.0) + side * 0.35 + fwd * 0.2;
+            let rope_pts = rope(0, [hand.x, hand.y, hand.z], [post.x, post.y, post.z], 0.08, &w);
+            frame(0, [0.0, 0.0, 0.0], [0.0; 4], &w, &mut Vec::new());
+            std::thread::sleep(std::time::Duration::from_millis(33));
+            let mut polys: Vec<(Vec<V3>, [u8; 3])> = Vec::new();
+            // The player: legs, body, head as one box each, facing fwd.
+            let q = Quat::axis_angle(v3(0.0, 1.0, 0.0), -yaw);
+            for (cx, hy, hx, col) in [(0.375, 0.375, 0.25, [60u8, 70, 160]), (1.125, 0.375, 0.25, [40, 160, 170]), (1.75, 0.25, 0.25, [200, 160, 130])] {
+                for f4 in box_faces(corners(feet + v3(0.0, cx, 0.0), q, v3(0.125 * 1.0, hy, hx))) {
+                    polys.push((f4.to_vec(), col));
+                }
+                let _ = hx;
+            }
+            for (k, quad) in out.chunks(4).enumerate() {
+                let pts: Vec<V3> = quad.iter().map(|v| v3(f64::from(v.pos[0]), f64::from(v.pos[1]), f64::from(v.pos[2]))).collect();
+                let col = if (k / 2) % 2 == 0 { [180, 30, 40] } else { [150, 20, 30] };
+                polys.push((pts, col));
+            }
+            for wseg in rope_pts.windows(2) {
+                let (a, b) = (v3(wseg[0][0], wseg[0][1], wseg[0][2]), v3(wseg[1][0], wseg[1][1], wseg[1][2]));
+                let up = v3(0.0, 0.03, 0.0);
+                polys.push((vec![a - up, b - up, b + up, a + up], [130, 100, 70]));
+            }
+            for f4 in box_faces(corners(post - v3(0.0, 0.9, 0.0), Quat::IDENTITY, v3(0.12, 0.5, 0.12))) {
+                polys.push((f4.to_vec(), [140, 105, 60]));
+            }
+            frames.push(poly_json(&polys));
+        }
+        scenes.push(format!("[{}]", frames.join(",")));
+        clear();
+    }
+    std::fs::write("/tmp/hp_dump2.json", format!("[{}]", scenes.join(","))).unwrap();
+}
+
+/// A turning player's cape keeps hanging (its left and right edge do not swap). Global state, so
+/// this runs inside `capes_hang_as_cloth_and_leads_become_ropes`.
+fn a_turning_cape_keeps_hanging() {
+    let w = Flat { pillar: None, water_above: false };
+    clear();
+    for (yaw0, rate) in [(0.0, 0.0), (1.0, 0.0), (0.0, 0.8)] {
+        clear();
+        let mut low = 0.0;
+        for f in 0..45 {
+            let yaw: f64 = yaw0 + rate * f as f64 / 30.0;
+            let feet = v3(0.0, 64.0, 0.0);
+            let (s, c) = yaw.sin_cos();
+            let fwd = v3(c, 0.0, s);
+            let side = v3(-s, 0.0, c);
+            let neck = feet + v3(0.0, 1.5, 0.0);
+            let (w2, h, d) = (5.0 / 16.0, 1.0, 1.0 / 16.0);
+            let back = neck - fwd * 0.17;
+            let pt = |a: f64, b: f64, e: f64| back + side * a + v3(0.0, b, 0.0) - fwd * e;
+            let faces: [[V3; 4]; 2] = [
+                [pt(-w2, -h, d), pt(w2, -h, d), pt(w2, 0.0, d), pt(-w2, 0.0, d)],
+                [pt(w2, -h, 0.0), pt(-w2, -h, 0.0), pt(-w2, 0.0, 0.0), pt(w2, 0.0, 0.0)],
+            ];
+            let mut rest: Vec<Vertex> = faces.iter().flat_map(|q| q.iter().map(|p| Vertex { pos: [p.x as f32, p.y as f32, p.z as f32], uv: [0.0; 2], layer: 0, color: 0, light: 0, normal: [0; 4], glint_uv: [0.0; 2] }).collect::<Vec<_>>()).collect();
+            let small = rest[0..4].iter().map(|v| Vertex { pos: [v.pos[0], 65.5, v.pos[2]], ..*v }).collect::<Vec<_>>();
+            for _ in 0..4 { rest.extend(small.iter().cloned()); }
+            let mut out = Vec::new();
+            assert!(cape(1, &rest, [neck.x as f32, neck.y as f32, neck.z as f32], &mut out));
+            frame(0, [0.0; 3], [0.0; 4], &w, &mut Vec::new());
+            std::thread::sleep(std::time::Duration::from_millis(33));
+            low = out.iter().map(|v| v.pos[1]).fold(f32::MAX, f32::min);
+        }
+        assert!(low < 64.6, "yaw {yaw0}, turning {rate}: the cape is lifted to {low}");
+    }
 }

@@ -1,6 +1,6 @@
 [mod]
 id = "horizon_physics"
-version = "0.1.0"
+version = "0.2.0"
 priority = 100
 
 [compatibility]
@@ -109,5 +109,72 @@ bindings = [
   { name = "game", ty = "&crate::game::Game<'_>", value = "self" },
   { name = "camera", ty = "glam::DVec3", value = "camera" },
   { name = "alpha", ty = "f64", value = "alpha" },
+  { name = "out", ty = "&mut Vec<Vertex>", value = "&mut *out" },
+]
+
+# ClientPacketListener.handleExplosion: a fireball, sparks and smoke; the blast throws its blocks.
+[[injection]]
+id = "explode"
+kind = "HEAD"
+target = "horizon_client::game::lan_particles::Game<'_>::remote_explode"
+helper = "explode.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "p", ty = "&play::Explode", value = "p" },
+]
+
+# A block the server turns to air, read while it is still there (an explosion's blocks).
+[[injection]]
+id = "aired"
+kind = "HEAD"
+target = "horizon_client::game::remote::Game<'_>::server_block"
+helper = "aired.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "pos", ty = "[i32; 3]", value = "pos" },
+  { name = "state", ty = "i32", value = "state" },
+]
+
+# LeashFeatureRenderer: leads as ropes (the knots are kept).
+[[injection]]
+id = "leads"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::leads::Game<'_>::leash_geometry"
+helper = "leads.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "self" },
+  { name = "camera", ty = "glam::DVec3", value = "camera" },
+  { name = "alpha", ty = "f64", value = "alpha" },
+  { name = "out", ty = "&mut Vec<Vertex>", value = "&mut *out" },
+]
+
+# FishingHookRenderer's line as a rope.
+[[injection]]
+id = "fishing"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::fishing::Game<'_>::fishing_line"
+helper = "fishing.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "self" },
+  { name = "alpha", ty = "f64", value = "alpha" },
+  { name = "size", ty = "[u32; 2]", value = "size" },
+]
+
+# CapeLayer: the cape as cloth.
+[[injection]]
+id = "cape"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::mobs::render::cape"
+helper = "cape.rs"
+bindings = [
+  { name = "m", ty = "&Mob", value = "m" },
+  { name = "alpha", ty = "f32", value = "alpha" },
+  { name = "base", ty = "glam::Mat4", value = "base" },
+  { name = "uv", ty = "[f32; 4]", value = "uv" },
+  { name = "light", ty = "u32", value = "light" },
+  { name = "data", ty = "&MobData", value = "data" },
   { name = "out", ty = "&mut Vec<Vertex>", value = "&mut *out" },
 ]

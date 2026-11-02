@@ -6,7 +6,11 @@
     "crates/horizon-client/src/game.rs": "3b01e2599763a3787c65db32ddcd663d01b665d224e48609a39006f73979d0dc",
     "crates/horizon-client/src/game/end.rs": "20977f8181de88ceb110b825cc5abd3fe9bcb385e6c2aadd8b624d0dfd4bc06e",
     "crates/horizon-client/src/game/item_draw.rs": "1a277318d221cc474078999d0aa79c940cf0ab2c31978e9fd9a2f128c9ef32a1",
-    "crates/horizon-client/src/game/native_hooks.rs": "1597f5f904d7c7fa807264faeecb5257642ba1720b153f0f1c35ef79c94a5ab9"
+    "crates/horizon-client/src/game/native_hooks.rs": "1597f5f904d7c7fa807264faeecb5257642ba1720b153f0f1c35ef79c94a5ab9",
+    "crates/horizon-client/src/game/lan_particles.rs": "d8198c78682e52887edb8d1858bca768d0d002846d39cf2dcca35142e9419a69",
+    "crates/horizon-client/src/game/remote.rs": "3d15b210ffe03ad5721c3c83cca2bfae651ac4e5c962558810d77deb8a474123",
+    "crates/horizon-client/src/game/leads.rs": "e397023afb0547d8d996b350357bae431b583ed2139eeebdc0795314eca4ddd8",
+    "crates/horizon-client/src/game/fishing.rs": "55c66857078564d1bac7bb37b6f46d6825daad87e1e5226a64e9073fb92c1c81"
   },
   "horizon_repository": "https://github.com/horizon-rust/horizon",
   "horizon_mixins_repository": "https://github.com/horizon-rust/horizon-mixins",
