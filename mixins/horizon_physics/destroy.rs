@@ -6,6 +6,10 @@ fn horizon_physics_destroy(
     state: BlockStateId,
 ) -> ::core::ops::ControlFlow<()> {
     use horizon_client::native_horizon_physics as hp;
+    // A block a collapse took away: it falls whole, no pieces.
+    if hp::take_silenced(pos) {
+        return ::core::ops::ControlFlow::Break(());
+    }
     if !game.native_window() || !game.native_on(hp::ID) || !hp::settings().blocks {
         return ::core::ops::ControlFlow::Continue(());
     }

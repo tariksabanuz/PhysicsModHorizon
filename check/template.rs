@@ -248,6 +248,13 @@ pub mod game {
     pub struct GameSettings { pub horizon: HorizonSettings }
     pub struct Renderer;
     impl Renderer { pub fn drop_shader_packs(&mut self) {} }
+    pub type Result<T> = std::result::Result<T, String>;
+    pub struct BlockPos;
+    impl BlockPos { pub fn new(x: i32, y: i32, z: i32) -> BlockPos { BlockPos } }
+    pub struct Behaviours;
+    pub struct GameLevel<'a>(std::marker::PhantomData<&'a ()>);
+    pub struct Ticks;
+    impl Behaviours { pub fn destroy_block(&self, level: &mut GameLevel<'_>, ticks: &mut Ticks, pos: BlockPos, drop: bool) -> bool { true } }
     pub struct Game<'a> {
         res: std::sync::Arc<Resources>,
         gui: UiResources,
@@ -263,11 +270,23 @@ pub mod game {
         boats: Vec<boats::Boat>,
         riding: Option<u32>,
         mobs: Vec<crate::mobs::Mob>,
+        creative: bool,
         _l: std::marker::PhantomData<&'a ()>,
     }
     impl Game<'_> {
         fn particle_sprite(&self, state: BlockStateId, pos: [i32; 3]) -> Option<(String, u32)> { None }
         fn particle_shape(&self, pos: [i32; 3], state: BlockStateId) -> Vec<[f64; 6]> { Vec::new() }
+        fn break_block(&mut self, pos: [i32; 3]) -> Result<()> {
+            //COLLAPSE//
+            match __h_collapse(&mut *self, pos) {
+                ::core::ops::ControlFlow::Break(r) => return r,
+                ::core::ops::ControlFlow::Continue(()) => {}
+            }
+            Ok(())
+        }
+        fn with_level<R>(&mut self, f: impl FnOnce(&Behaviours, &mut GameLevel<'_>, &mut Ticks) -> R) -> R {
+            f(&Behaviours, &mut GameLevel(std::marker::PhantomData), &mut Ticks)
+        }
         fn destroy_particles(&mut self, pos: [i32; 3], state: BlockStateId) {
             //DESTROY//
             match __h_destroy(&mut *self, pos, state) {

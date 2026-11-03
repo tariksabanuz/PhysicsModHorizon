@@ -75,7 +75,6 @@ fn horizon_physics_world(game: &crate::game::Game<'_>, camera: glam::DVec3, out:
                             .unwrap_or(1.0);
                         Some(f64::from(y) + layers / 8.0)
                     }
-                    "minecraft:snow_block" | "minecraft:powder_snow" => Some(f64::from(y) + 1.0),
                     _ => None,
                 }
             };

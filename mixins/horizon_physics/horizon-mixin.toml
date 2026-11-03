@@ -1,6 +1,6 @@
 [mod]
 id = "horizon_physics"
-version = "0.8.0"
+version = "0.9.0"
 priority = 100
 
 [compatibility]
@@ -44,6 +44,18 @@ helper = "settings_click.rs"
 bindings = [
   { name = "mod_id", ty = "&str", value = "mod_id" },
   { name = "button", ty = "usize", value = "button" },
+]
+
+# ServerPlayerGameMode.destroyBlock, then what the broken block held up falls (trees, bridges).
+[[injection]]
+id = "collapse"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::Game<'_>::break_block"
+helper = "collapse.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "pos", ty = "[i32; 3]", value = "pos" },
 ]
 
 # ClientLevel.addDestroyBlockEffect: the block crumbles into pieces instead of particles.

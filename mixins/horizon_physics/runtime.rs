@@ -19,7 +19,7 @@ use crate::mesher::Vertex;
 
 pub const ID: &str = "horizon_physics";
 pub const NAME: &str = "Horizon Physics";
-pub const VERSION: &str = "0.8.0";
+pub const VERSION: &str = "0.9.0";
 pub const DESCRIPTION: &str =
     "By tariksabanuz. Blocks crumble and blow apart, ragdolls, items, smoke, ropes, capes, liquids, waves and swaying plants.";
 
@@ -1262,6 +1262,40 @@ impl Physics {
         let life = s.lifetime() + self.rng.range(0.0, 2.0);
         self.add(bodies, Vec::new(), life, Some(pos));
     }
+
+    /// Blocks that lost their support (`collapse`), falling as they were: each a whole block
+    /// (leaves in a few clumps), tipping over away from the cut (`push`), the higher the more,
+    /// as a tree falls over from its foot at `foot`.
+    pub fn spawn_falling(&mut self, blocks: &[Falling], foot: V3, push: V3, s: &Settings) {
+        let mut bodies = Vec::new();
+        let side = v3(-push.z, 0.0, push.x);
+        for b in blocks {
+            let o = v3(f64::from(b.pos[0]), f64::from(b.pos[1]), f64::from(b.pos[2]));
+            let color = tint_color(b.tint);
+            let up = (o.y + 0.5 - foot.y).max(0.0);
+            let pieces = if b.leaves { split_box([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2, self.rng()) } else { vec![[0.005, 0.005, 0.005, 0.995, 0.995, 0.995]] };
+            for piece in pieces {
+                let (c, h, verts) = box_mesh(piece, b.uv, color);
+                let mut body = Body::new(o + c, Quat::IDENTITY, h, verts);
+                // Turning about the foot: the higher, the faster it goes over.
+                body.v = push * (0.55 * up) + v3(self.rng.range(-0.15, 0.15), self.rng.range(-0.1, 0.2), self.rng.range(-0.15, 0.15));
+                body.w = side * (-0.55) + self.rng.unit() * self.rng.range(0.1, 0.6);
+                bodies.push(body);
+            }
+        }
+        let life = s.lifetime() + self.rng.range(0.0, 2.0);
+        self.add(bodies, Vec::new(), life, None);
+    }
+}
+
+/// A block that falls in a collapse: where it was, its sprite (atlas uv) and tint, and whether it
+/// is leaves.
+#[derive(Clone, Copy, Debug)]
+pub struct Falling {
+    pub pos: [i32; 3],
+    pub uv: [f32; 4],
+    pub tint: u32,
+    pub leaves: bool,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1626,6 +1660,73 @@ pub fn spawn_block(pos: [i32; 3], boxes: &[[f64; 6]], uv: [f32; 4], tint: u32) {
         return;
     }
     with(|s| s.physics.spawn_block(pos, boxes, uv, tint, &st));
+}
+
+/// Set while the collapse hook breaks blocks itself (its own nested call).
+pub static COLLAPSE: Guard = Guard::new();
+static SILENT: Mutex<Vec<[i32; 3]>> = Mutex::new(Vec::new());
+
+/// Blocks the collapse takes away: their breaking makes no particles (they fall whole instead).
+pub fn silence(pos: [i32; 3]) {
+    if let Ok(mut v) = SILENT.lock() {
+        v.push(pos);
+        if v.len() > 1024 {
+            v.drain(..512);
+        }
+    }
+}
+
+/// True once for a block the collapse took away.
+pub fn take_silenced(pos: [i32; 3]) -> bool {
+    SILENT.lock().is_ok_and(|mut v| match v.iter().position(|p| *p == pos) {
+        Some(i) => {
+            v.swap_remove(i);
+            true
+        }
+        None => false,
+    })
+}
+
+/// The blocks that lost their support when the block at `foot` was broken, falling over away
+/// from `push` (a horizontal direction).
+pub fn collapse(blocks: &[Falling], foot: [i32; 3], push: [f64; 2]) {
+    let st = settings();
+    if !st.blocks || blocks.is_empty() {
+        return;
+    }
+    let len = (push[0] * push[0] + push[1] * push[1]).sqrt();
+    let dir = if len > 1e-6 { v3(push[0] / len, 0.0, push[1] / len) } else { v3(1.0, 0.0, 0.0) };
+    let foot = v3(f64::from(foot[0]) + 0.5, f64::from(foot[1]), f64::from(foot[2]) + 0.5);
+    with(|s| s.physics.spawn_falling(blocks, foot, dir, &st));
+}
+
+/// What a block is to a collapse, by its id: 1 the ground (it holds up what stands on it), 2
+/// leaves (they hold nothing up), 3 anything else that can fall.
+pub fn collapse_kind(name: &str) -> u8 {
+    const GROUND: &[&str] = &[
+        "minecraft:stone", "minecraft:deepslate", "minecraft:granite", "minecraft:diorite", "minecraft:andesite",
+        "minecraft:tuff", "minecraft:calcite", "minecraft:dirt", "minecraft:coarse_dirt", "minecraft:rooted_dirt",
+        "minecraft:grass_block", "minecraft:podzol", "minecraft:mycelium", "minecraft:farmland", "minecraft:dirt_path",
+        "minecraft:mud", "minecraft:clay", "minecraft:sand", "minecraft:red_sand", "minecraft:gravel",
+        "minecraft:sandstone", "minecraft:red_sandstone", "minecraft:terracotta", "minecraft:snow_block",
+        "minecraft:ice", "minecraft:packed_ice", "minecraft:blue_ice", "minecraft:netherrack", "minecraft:soul_sand",
+        "minecraft:soul_soil", "minecraft:basalt", "minecraft:blackstone", "minecraft:end_stone", "minecraft:obsidian",
+        "minecraft:moss_block", "minecraft:pale_moss_block", "minecraft:magma_block", "minecraft:dripstone_block",
+        "minecraft:smooth_basalt", "minecraft:crimson_nylium", "minecraft:warped_nylium", "minecraft:bedrock",
+        "minecraft:powder_snow", "minecraft:suspicious_sand", "minecraft:suspicious_gravel",
+    ];
+    if name.ends_with("_leaves") {
+        return 2;
+    }
+    if GROUND.contains(&name) || name.ends_with("_ore") || name.ends_with("_terracotta") || name.ends_with("_concrete_powder") {
+        return 1;
+    }
+    3
+}
+
+/// Whether a block id is a log or a stem (what leaves hang from).
+pub fn is_log(name: &str) -> bool {
+    name.ends_with("_log") || name.ends_with("_wood") || name.ends_with("_stem") || name.ends_with("_hyphae")
 }
 
 /// Whether mob deaths become pieces at all.

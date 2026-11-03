@@ -185,10 +185,10 @@ pub const OCEAN: [[f64; 6]; 5] = [
 ];
 /// A lake's or river's lapping.
 pub const LAKE: [[f64; 6]; 4] = [
-    [0.83, 0.56, 15.0, 0.06, 0.0, 0.55],
-    [0.39, 0.92, 9.5, 0.04, 1.7, 0.55],
-    [0.97, -0.24, 6.8, 0.025, 3.4, 0.55],
-    [0.60, 0.80, 4.4, 0.015, 5.1, 0.55],
+    [0.83, 0.56, 14.0, 0.13, 0.0, 0.55],
+    [0.39, 0.92, 9.0, 0.09, 1.7, 0.55],
+    [0.97, -0.24, 6.4, 0.055, 3.4, 0.58],
+    [0.60, 0.80, 4.2, 0.03, 5.1, 0.6],
 ];
 /// How much of the swell moves the sea's surface sideways (Gerstner's steepness).
 pub const CHOP: f64 = 0.35;
@@ -228,8 +228,8 @@ pub fn water_time(game_time: i64, partial: f64) -> f64 {
 /// dh/dz), before the distance fade.
 pub fn water_motion(x: f64, z: f64, t: f64, open: f64, wind: f64) -> [f64; 5] {
     let storm = (0.42 + wind * 0.3).clamp(0.15, 1.6);
-    let sea = smoothstep(0.55, 0.95, open);
-    let lake = (open * 2.2).clamp(0.0, 1.0) * (1.0 - sea);
+    let sea = smoothstep(0.5, 0.9, open);
+    let lake = (open * 3.0).clamp(0.0, 1.0) * (1.0 - sea);
     let mut r = [0.0; 5];
     for (table, k) in [(&OCEAN[..], sea), (&LAKE[..], lake)] {
         if k <= 0.0 {
@@ -358,11 +358,11 @@ fn horizon_physics_storm() -> f32 {
 // The water at world point p (x, z) whose openness is `open` (0 at the shore or in a puddle, 1
 // on deep open water): how much of the sea's swell and of a lake's lapping it has.
 fn horizon_physics_sea(open: f32) -> f32 {
-    return smoothstep(0.55, 0.95, open);
+    return smoothstep(0.5, 0.9, open);
 }
 fn horizon_physics_swell(p: vec2<f32>, t: f32, open: f32) -> vec3<f32> {
     let sea = horizon_physics_sea(open);
-    let lake = clamp(open * 2.2, 0.0, 1.0) * (1.0 - sea);
+    let lake = clamp(open * 3.0, 0.0, 1.0) * (1.0 - sea);
     var r = vec3(0.0);
     if (sea > 0.0) { r += horizon_physics_ocean(p, t) * sea; }
     if (lake > 0.0) { r += horizon_physics_lake(p, t) * lake; }
@@ -691,9 +691,10 @@ pub fn snow_press(feet: [f64; 3], width: f64, dir: [f64; 2], top: impl Fn(i32, i
     if !(0.05..=1.0001).contains(&height) {
         return false;
     }
-    // As deep as the snow lets it: most of a thin layer, a good part of a block in deep snow.
-    let deepest = (height - 1.0 / 32.0).min(0.42);
-    let depth = (deepest * 0.85).min(0.05 + width * 0.35);
+    // As deep as a foot sinks in vanilla: a layer of snow stands an eighth of a block above what
+    // the feet stand on (the thinnest layer: down to almost the ground).
+    let deepest = (height - 1.0 / 32.0).min(0.125);
+    let depth = deepest;
     if depth <= 0.005 {
         return false;
     }

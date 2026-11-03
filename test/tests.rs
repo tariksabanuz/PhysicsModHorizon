@@ -1101,7 +1101,7 @@ fn snow_gives_way_where_walked() {
     let at = |d: &sway::SnowDent, i: usize, j: usize| d.depth[i * pts + j];
     // Under the foot (x 0.25, z 0.25): pressed down, not through the snow.
     let deep = at(&b.1, 2, 2);
-    assert!(deep > 0.1 && deep < 0.375, "{deep}");
+    assert!((deep - 0.125).abs() < 1e-6, "an eighth of a block, as feet sink: {deep}");
     // A lip pushed up somewhere around it.
     let lip = sway::snow_in_section(0, 0, 0).iter().chain(sway::snow_in_section(-1, 0, 0).iter())
         .chain(sway::snow_in_section(0, 0, -1).iter()).chain(sway::snow_in_section(-1, 0, -1).iter())
@@ -1124,7 +1124,7 @@ fn snow_gives_way_where_walked() {
     let quads = sway::snow_top([0.0, 0.375, 0.0], 0.375, &b.1, &[corner(0.0, 0.0), corner(0.0, 1.0), corner(1.0, 1.0), corner(1.0, 0.0)]);
     assert_eq!(quads.len(), 64 * 4);
     let low = quads.iter().map(|q| q.0[1]).fold(f32::MAX, f32::min);
-    assert!(low < 0.375 - 0.1 && low > 0.0, "{low}");
+    assert!((low - (0.375 - 0.125)).abs() < 1e-4, "{low}");
     let darkest = quads.iter().map(|q| q.3 & 255).min().unwrap();
     assert!(darkest < 230, "{darkest}");
     assert!(quads.iter().all(|q| q.3 >> 24 == 0xff), "keeps the alpha byte");
@@ -1149,17 +1149,17 @@ fn dump_snow_trail() {
     sway::snow_world(9, 0);
     sway::snow_clear();
     // A field of full snow blocks: a player walks a bend, a pig crosses it.
-    let top = |x: i32, y: i32, z: i32| -> Option<f64> { (y == 0 && (-8..8).contains(&x) && (-8..8).contains(&z)).then_some(1.0) };
+    let top = |x: i32, y: i32, z: i32| -> Option<f64> { (y == 0 && (-8..8).contains(&x) && (-8..8).contains(&z)).then_some(0.5) };
     let mut prev = [-7.0f64, -5.0];
     for k in 0..400 {
         let t = f64::from(k) / 399.0;
         let p = [-7.0 + 13.0 * t, -5.0 + 9.0 * (t * 2.2).sin() * 0.8];
-        sway::snow_press([p[0], 1.0, p[1]], 0.6, [p[0] - prev[0], p[1] - prev[1]], top);
+        sway::snow_press([p[0], 0.5, p[1]], 0.6, [p[0] - prev[0], p[1] - prev[1]], top);
         prev = p;
     }
     for k in 0..200 {
         let z = -7.0 + 14.0 * f64::from(k) / 199.0;
-        sway::snow_press([3.0 + 0.3 * (z * 0.7).sin(), 1.0, z], 0.9, [0.0, 1.0], top);
+        sway::snow_press([3.0 + 0.3 * (z * 0.7).sin(), 0.5, z], 0.9, [0.0, 1.0], top);
     }
     let mut out = String::new();
     let corner = |x: f32, z: f32| sway::SnowCorner { at: [x, z], uv: [x * 32768.0, z * 32768.0], light: 240, color: 0xffff_ffff };
@@ -1167,12 +1167,34 @@ fn dump_snow_trail() {
     for cx in [-1, 0] {
         for cz in [-1, 0] {
             for (p, d) in sway::snow_in_section(cx, 0, cz) {
-                let o = [(cx * 16 + p[0]) as f32, 1.0, (cz * 16 + p[2]) as f32];
-                for q in sway::snow_top(o, 1.0, &d, &corners) {
+                let o = [(cx * 16 + p[0]) as f32, 0.5, (cz * 16 + p[2]) as f32];
+                for q in sway::snow_top(o, 0.5, &d, &corners) {
                     let _ = writeln!(out, "{} {} {} {}", q.0[0], q.0[1], q.0[2], q.3 & 255);
                 }
             }
         }
     }
     std::fs::write("/tmp/snow_trail.txt", out).unwrap();
+}
+
+#[test]
+fn a_cut_tree_falls_over_away_from_the_player() {
+    // A trunk of five logs above its cut at y 64 (the stump gone), leaves on top; pushed toward +x.
+    let mut p = Physics::default();
+    let st = Settings::default();
+    let mut blocks: Vec<Falling> = (65..70).map(|y| Falling { pos: [0, y, 0], uv: [0.0; 4], tint: 0xffffff, leaves: false }).collect();
+    blocks.push(Falling { pos: [0, 70, 0], uv: [0.0; 4], tint: 0xffffff, leaves: true });
+    p.spawn_falling(&blocks, v3(0.5, 64.0, 0.5), v3(1.0, 0.0, 0.0), &st);
+    assert_eq!(p.bodies.len(), 5 + 2, "five whole logs and the leaves in clumps");
+    run(&mut p, &Flat { pillar: None, water_above: false }, 4.0);
+    let logs = &p.bodies[..5];
+    // Down on the ground, and spread out away from the player: the top went furthest.
+    assert!(logs.iter().all(|b| b.x.y < 64.9), "{:?}", logs.iter().map(|b| b.x.y).collect::<Vec<_>>());
+    assert!(logs.iter().all(|b| b.x.x > 0.0));
+    assert!(logs[4].x.x > logs[0].x.x + 1.0, "fell over: {} vs {}", logs[4].x.x, logs[0].x.x);
+    assert_eq!(collapse_kind("minecraft:birch_leaves"), 2);
+    assert_eq!(collapse_kind("minecraft:grass_block"), 1);
+    assert_eq!(collapse_kind("minecraft:iron_ore"), 1);
+    assert_eq!(collapse_kind("minecraft:birch_log"), 3);
+    assert!(is_log("minecraft:birch_log") && !is_log("minecraft:birch_planks"));
 }

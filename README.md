@@ -5,6 +5,10 @@ brings PhysicsMod-style physics to the client, written from scratch:
 
 - **Crumbling blocks**: a broken block falls apart into pieces of its own texture that tumble, bounce,
   pile up and fade after a while.
+- **Collapsing**: what a broken block held up and that no longer reaches the ground falls: cut a
+  tree's trunk and it tips over away from you, whole logs tumbling down with its leaves; take a
+  bridge's pillar and the bridge comes down. The blocks leave the world as if broken (their drops
+  fall, in survival). Only blocks the player breaks, in a world played on this computer.
 - **Mob ragdolls**: a mob that dies drops as a ragdoll: its model parts (head, body, arms, legs) stay
   joined where they meet and fall limply.
 - **Mobs falling apart**: or the parts come loose and tumble separately (or a mix of both).
@@ -16,10 +20,10 @@ brings PhysicsMod-style physics to the client, written from scratch:
   Pieces lying around and mobs killed by the blast are thrown too.
 - **Smoke and fire**: fire, soul fire, lit campfires and open lava give off soft, see-through smoke
   that rises, swirls, drifts with the wind and gathers and spreads under ceilings, and glowing embers.
-- **Snow**: the snow gives way: where the player and the mobs walk, the snow (layers, snow blocks
-  and powder snow) is pressed down into a trough with a lip of pushed-up snow beside it, real
-  terrain shaded like the game shades its faces, and each step kicks up powder. The prints stay
-  while the blocks are loaded (up to 3000 blocks).
+- **Snow**: snow layers give way: where the player and the mobs walk, the snow is pressed down an
+  eighth of a block (as far as feet sink in it) into a soft trough with a little lip of pushed-up
+  snow beside it, real terrain shaded like the game shades its faces, and each step kicks up powder.
+  The prints stay while the blocks are loaded (up to 3000 blocks).
 - **Ropes**: leads (round, lit, heavy: the wind barely moves them) and fishing lines sag, swing and
   lie on the blocks.
 - **Cloth capes**: capes are cloth that the air drags: they trail and lift when you run, blow out in
