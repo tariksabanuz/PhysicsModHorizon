@@ -1,7 +1,8 @@
 // AbstractBoatRenderer on the waves: the game draws its boats into the buffer as ever, then each
 // boat on wavy water is lifted, moved and tilted the way the shader moves the water under it
-// (the same swell, at the same time). The boat the player sits in only tilts: the camera does not
-// ride the swell.
+// (the same swell, at the same time). The boat the player rides is lifted fully, and the camera
+// hook lifts the eye by the same amount, so the player rides the swell with it.
+
 fn horizon_physics_boats(
     game: &crate::game::Game<'_>,
     camera: glam::DVec3,
@@ -10,7 +11,7 @@ fn horizon_physics_boats(
 ) -> ::core::ops::ControlFlow<()> {
     use horizon_client::native_horizon_physics as hp;
     use horizon_client_render::native_horizon_physics_sway as sway;
-    if !sway::waves_on() || !hp::builtin_running() || !hp::settings().boats || hp::BOATS.enter() {
+    if !sway::waves_on() || !hp::settings().boats || hp::BOATS.enter() {
         return ::core::ops::ControlFlow::Continue(());
     }
     let start = out.len();
@@ -47,12 +48,10 @@ fn horizon_physics_boats(
         let rel = pos - camera;
         let reach = sway::water_reach(rel.length());
         let m = sway::water_motion_with(pos.x, pos.z, t, open, wind, height);
+        // The boat ridden is lifted fully, as the camera is (the camera hook rides the same swell).
         let riding = game.riding == Some(b.id);
-        let lift = if riding {
-            glam::Vec3::ZERO
-        } else {
-            glam::Vec3::new(m[1] as f32, (m[0] + 0.04) as f32, m[2] as f32) * reach as f32
-        };
+        let k = if riding { 1.0 } else { reach as f32 };
+        let lift = glam::Vec3::new(m[1] as f32, (m[0] + 0.04) as f32, m[2] as f32) * k;
         let up = glam::Vec3::new((-m[3] * reach) as f32, 1.0, (-m[4] * reach) as f32).normalize();
         let turn = glam::Quat::from_rotation_arc(glam::Vec3::Y, up);
         moves.push((rel.as_vec3(), lift, turn));

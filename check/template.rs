@@ -46,6 +46,20 @@ pub mod native_horizon_physics {
     //RUNTIME//
 }
 
+pub mod block_entity_render {
+    use crate::mesher::Vertex;
+    use glam::{Mat4, Vec3};
+    pub struct Scene<'a> { pub partial: f32, pub game_time: i64, pub w: std::marker::PhantomData<&'a ()> }
+    enum Kind { None, Banner { color: u32, wall: bool, angle: f32 } }
+    pub struct BlockEntityRenderer;
+    impl BlockEntityRenderer {
+        fn render_one(&self, scene: &Scene, pos: [i32; 3], kind: &Kind, base: Mat4, packed: u8, lights: (Vec3, Vec3), crumbling: bool, world_chests: bool, out: &mut Vec<Vertex>) {
+            //BANNER//
+            if let ::core::ops::ControlFlow::Break(()) = __h_banner(self, scene, pos, kind, base, packed, lights, crumbling, world_chests, &mut *out) { return; }
+        }
+    }
+}
+
 pub mod native_horizon_physics_sway {
     //SWAY_MODULE//
 }
@@ -524,6 +538,16 @@ pub mod game {
             fn server_block(&mut self, pos: [i32; 3], state: i32) {
                 //AIRED//
                 __h_aired(&mut *self, pos, state);
+            }
+        }
+    }
+    pub mod perspective {
+        use super::Game;
+        impl Game<'_> {
+            pub(super) fn camera_view(&mut self, partial: f32) -> Option<(glam::DVec3, f32, f32)> {
+                //CAMERA//
+                if let ::core::ops::ControlFlow::Break(r) = __h_camera(&mut *self, partial) { return r; }
+                None
             }
         }
     }

@@ -1,6 +1,6 @@
 [mod]
 id = "horizon_physics"
-version = "0.13.0"
+version = "0.14.0"
 priority = 100
 
 [compatibility]
@@ -61,6 +61,38 @@ kind = "HEAD"
 target = "horizon_client::game::Game<'_>::attack"
 helper = "attack.rs"
 bindings = [{ name = "game", ty = "&crate::game::Game<'_>", value = "&*self" }]
+
+# BannerRenderer as cloth: the flag bends in the wind (re-entrant: the hook draws the banner itself).
+[[injection]]
+id = "banner"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client_render::block_entity_render::BlockEntityRenderer::render_one"
+helper = "banner.rs"
+bindings = [
+  { name = "this", ty = "&BlockEntityRenderer", value = "self" },
+  { name = "scene", ty = "&Scene<'_>", value = "scene" },
+  { name = "pos", ty = "[i32; 3]", value = "pos" },
+  { name = "kind", ty = "&Kind", value = "kind" },
+  { name = "base", ty = "Mat4", value = "base" },
+  { name = "packed", ty = "u8", value = "packed" },
+  { name = "lights", ty = "(Vec3, Vec3)", value = "lights" },
+  { name = "crumbling", ty = "bool", value = "crumbling" },
+  { name = "world_chests", ty = "bool", value = "world_chests" },
+  { name = "out", ty = "&mut Vec<Vertex>", value = "&mut *out" },
+]
+
+# Camera.setup on the waves: in a boat or swimming at the surface, the eye rides the swell.
+[[injection]]
+id = "camera"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::perspective::Game<'_>::camera_view"
+helper = "camera.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "partial", ty = "f32", value = "partial" },
+]
 
 # ServerPlayerGameMode.destroyBlock, then what the broken block held up falls (trees, bridges).
 [[injection]]

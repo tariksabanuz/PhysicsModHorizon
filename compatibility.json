@@ -24,7 +24,9 @@
     "crates/horizon-client/src/game/options.rs": "9d5a8603e53bb3f2eb5bb018db3fa7381d7b666aaede556abc76d97beaef8d6e",
     "crates/horizon-client/src/game/client_ambient.rs": "37589ab0fbaffc557e5923c34a4c57af722a22d32eb5f72c75550cc188f7ab66",
     "crates/horizon-client/src/game/item_particles.rs": "691a461403f264212589a11b7bd1fd80665e8435f0009502a90ec0824daade62",
-    "crates/horizon-client-render/src/particles.rs": "a1ae3ab2562681dc2d5b43e50f7c2df2c07b0c9302664e5653fd0effae1ed159"
+    "crates/horizon-client-render/src/particles.rs": "a1ae3ab2562681dc2d5b43e50f7c2df2c07b0c9302664e5653fd0effae1ed159",
+    "crates/horizon-client-render/src/block_entity_render.rs": "5f1690cd13a9bcb3eb2349600dabf5ac6942776fd6cdb36c1c23871cfbcc2e47",
+    "crates/horizon-client/src/game/perspective.rs": "4910c20b90261802e0f870023ceb03daf6a2f7ba424a6a5ed40a0c88d67d38e8"
   },
   "horizon_repository": "https://github.com/horizon-rust/horizon",
   "horizon_mixins_repository": "https://github.com/horizon-rust/horizon-mixins",

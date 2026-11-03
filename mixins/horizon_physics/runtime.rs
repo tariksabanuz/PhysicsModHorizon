@@ -19,7 +19,7 @@ use crate::mesher::Vertex;
 
 pub const ID: &str = "horizon_physics";
 pub const NAME: &str = "Horizon Physics";
-pub const VERSION: &str = "0.13.0";
+pub const VERSION: &str = "0.14.0";
 pub const DESCRIPTION: &str =
     "By tariksabanuz. Blocks crumble and blow apart, ragdolls, items, smoke, ropes, capes, liquids, waves and swaying plants.";
 
@@ -151,6 +151,9 @@ pub struct Settings {
     pub wave_speed: f32,
     /// Ragdolls and pieces are knocked away when you hit them.
     pub punch: bool,
+    /// Banners' flags are cloth in the wind, and doors swing open and shut.
+    pub banners: bool,
+    pub doors: bool,
     /// Snowballs and eggs shatter into pieces where they hit.
     pub projectiles: bool,
     /// How many droplets poured water and lava make.
@@ -246,6 +249,8 @@ impl Default for Settings {
             plant_push: true,
             wave_speed: 1.0,
             punch: true,
+            banners: true,
+            doors: true,
             projectiles: true,
             liquid_amount: 1.0,
             splashes: true,
@@ -471,6 +476,7 @@ impl Settings {
         t.push_str(&format!("plant_push={}\n", self.plant_push as u8));
         t.push_str(&format!("wave_speed={}\n", self.wave_speed));
         t.push_str(&format!("punch={}\n", self.punch as u8));
+        t.push_str(&format!("banners={}\ndoors={}\n", self.banners as u8, self.doors as u8));
         t.push_str(&format!("projectiles={}\n", self.projectiles as u8));
         t.push_str(&format!("liquid_amount={}\n", self.liquid_amount));
         t.push_str(&format!("splashes={}\n", self.splashes as u8));
@@ -580,6 +586,8 @@ impl Settings {
                     "plant_push" => s.plant_push = on,
                     "wave_speed" => s.wave_speed = f.clamp(0.25, 3.0),
                     "punch" => s.punch = on,
+                    "banners" => s.banners = on,
+                    "doors" => s.doors = on,
                     "projectiles" => s.projectiles = on,
                     "liquid_amount" => s.liquid_amount = f.clamp(0.0, 3.0),
                     "splashes" => s.splashes = on,
@@ -1956,6 +1964,37 @@ impl Default for Guard {
 pub static RENDER: Guard = Guard::new();
 /// Set while the lead hook draws the game's own leads into its buffer.
 pub static BOATS: Guard = Guard::new();
+/// Set while the camera hook asks the game for its own camera.
+pub static CAMERA: Guard = Guard::new();
+
+/// A swinging door's panel (`sway::door_swings`): the box `from` of each half (lower with sprite
+/// `bottom`, upper with `top`), turned by `angle` radians about the hinge (`pivot`, x and z in
+/// block space), drawn camera-relative into `out`, lit by the door's own light.
+pub fn door_draw(pos: [i32; 3], from: [f64; 6], pivot: [f64; 2], angle: f64, bottom: [f32; 4], top: [f32; 4], camera: [f64; 3], world: &dyn World, out: &mut Vec<Vertex>) {
+    let turn = Quat::axis_angle(v3(0.0, 1.0, 0.0), angle);
+    let hinge = v3(f64::from(pos[0]) + pivot[0], f64::from(pos[1]), f64::from(pos[2]) + pivot[1]);
+    let cam = v3(camera[0], camera[1], camera[2]);
+    for (dy, uv) in [(0, bottom), (1, top)] {
+        let light = world.light(pos[0], pos[1] + dy, pos[2]);
+        let (c, _, verts) = box_mesh(from, uv, 0xFFFF_FFFF);
+        let centre = v3(f64::from(pos[0]), f64::from(pos[1] + dy), f64::from(pos[2])) + c;
+        for v in &verts {
+            let p = centre + V3::from_f32(v.pos) - hinge;
+            let p = hinge + turn.rotate(p) - cam;
+            let n = turn.rotate(V3::from_f32(v.normal));
+            let pack = |x: f64| (x.clamp(-1.0, 1.0) * 127.0) as i8;
+            out.push(Vertex {
+                pos: [p.x as f32, p.y as f32, p.z as f32],
+                uv: v.uv,
+                layer: v.layer,
+                color: v.color,
+                light,
+                normal: [pack(n.x), pack(n.y), pack(n.z), v.normal_w],
+                glint_uv: v.glint_uv,
+            });
+        }
+    }
+}
 pub static LEADS: Guard = Guard::new();
 
 static CAPTURE: Mutex<Option<Vec<usize>>> = Mutex::new(None);
@@ -5582,8 +5621,8 @@ pub const CATEGORIES: [Category; 15] = [
     Category { name: "MOBS", title: "Mob Settings", about: "Change what happens when mobs die. They fall as ragdolls, come apart into their blocky parts, or break into pieces of their own skin!", scene: Scene::Mob(1), kind: 0 },
     Category { name: "BLOCKS", title: "Block Settings", about: "Change how blocks crumble when they are broken: small bits, the whole block, lumps of its pixels or sharp shards. Your choice!", scene: Scene::Block(3), kind: 0 },
     Category { name: "OCEAN", title: "Ocean Settings", about: "Water that knows how deep and open it is: the open sea rolls in a swell that boats ride, rivers and lakes lap, puddles stay still.", scene: Scene::Ocean, kind: 0 },
-    Category { name: "DYNAMIC BLOCKS", title: "Dynamic Block Settings", about: "Leaves, grass, flowers, crops and vines sway in the wind, and seagrass and kelp move with the current.", scene: Scene::Trees, kind: 0 },
-    Category { name: "CLOTH", title: "Cloth Settings", about: "Capes are cloth that trails behind you, lifts when you run and flutters in the wind. Leads and fishing lines sag and swing as real ropes.", scene: Scene::Trees, kind: 0 },
+    Category { name: "DYNAMIC BLOCKS", title: "Dynamic Block Settings", about: "Leaves, grass, flowers, crops and vines sway in the wind, plants bend as you walk through them, and doors swing open and shut, wobbling before they settle.", scene: Scene::Trees, kind: 0 },
+    Category { name: "CLOTH", title: "Cloth Settings", about: "Capes and banners are cloth: capes trail behind you and lift when you run, banners blow out and ripple in the wind. Leads and fishing lines sag and swing.", scene: Scene::Trees, kind: 0 },
     Category { name: "PROJECTILES", title: "Projectile Settings", about: "Snowballs and eggs shatter into little pieces where they hit, and explosions blow blocks apart into pieces that fly.", scene: Scene::Block(1), kind: 0 },
     Category { name: "LIQUIDS", title: "Liquid Settings", about: "BETA! Water and lava you pour splash out as droplets that run over the blocks before they settle, and a fall into water splashes.", scene: Scene::Weather, kind: 0 },
     Category { name: "SNOW", title: "Snow Settings", about: "Snow layers give way where you and the mobs walk and leave a trail behind, and every step kicks up a little powder.", scene: Scene::Snow, kind: 0 },
@@ -5598,7 +5637,7 @@ pub const CATEGORIES: [Category; 15] = [
 /// A setting on a page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
-    MaxObjects, McBreak, SimSpeed, Items, ItemSpin, Pvp, ItemBreak, Crack, Sprint, Eat, BlockParticles, ParticleLife, ParticleVar, Deaths, MobLife, MobVar, Anim, JointForce, JointBlood, RagdollLimit, BlockPhysics, Activation, BlockLife, ObjScale, BlockVar, CapeOn, CapeRange, HideCape, Ropes, ImpactVolume, WindVolume, WindForces, Weather, RainAmount, ThunderAmount, WindClear, WindRain, WindThunder, OpRain, OpSnow, OpDust, Collapse, CollapseDrops, CollapseTicks, CollapseLimit, Waves, WaveHeight, Boats, Foam, SwayLeaves, Plants, SwayVines, SwayWater, SwayStrength, PlantPush, WaveSpeed, Punch, Projectiles, Explosions, Liquids, LiquidAmount, Splashes, Snow, MobTrails, SnowDepth, SnowPowder, Smoke, Embers, SmokeAmount, SmokeOpacity, VanillaSmoke, AnimMotion, AnimParticle, AnimDuration, AnimAmount,
+    MaxObjects, McBreak, SimSpeed, Items, ItemSpin, Pvp, ItemBreak, Crack, Sprint, Eat, BlockParticles, ParticleLife, ParticleVar, Deaths, MobLife, MobVar, Anim, JointForce, JointBlood, RagdollLimit, BlockPhysics, Activation, BlockLife, ObjScale, BlockVar, CapeOn, CapeRange, HideCape, Ropes, ImpactVolume, WindVolume, WindForces, Weather, RainAmount, ThunderAmount, WindClear, WindRain, WindThunder, OpRain, OpSnow, OpDust, Collapse, CollapseDrops, CollapseTicks, CollapseLimit, Waves, WaveHeight, Boats, Foam, SwayLeaves, Plants, SwayVines, SwayWater, SwayStrength, PlantPush, WaveSpeed, Punch, Banners, Doors, Projectiles, Explosions, Liquids, LiquidAmount, Splashes, Snow, MobTrails, SnowDepth, SnowPowder, Smoke, Embers, SmokeAmount, SmokeOpacity, VanillaSmoke, AnimMotion, AnimParticle, AnimDuration, AnimAmount,
 }
 
 /// A slider's range and step.
@@ -5701,6 +5740,8 @@ impl Key {
             Key::PlantPush => format!("Walking Bends Plants: {}", on_upper(s.plant_push)),
             Key::WaveSpeed => format!("Wave Speed: {}", decimal(s.wave_speed)),
             Key::Punch => format!("Interactive Ragdolls: {}", on_upper(s.punch)),
+            Key::Banners => format!("Banner Physics: {}", on_upper(s.banners)),
+            Key::Doors => format!("Swinging Doors: {}", on_upper(s.doors)),
             Key::Projectiles => format!("Projectile Physics: {}", on_upper(s.projectiles)),
             Key::Explosions => format!("Explosion Physics: {}", on_upper(s.explosions)),
             Key::Liquids => format!("Liquid Physics (Beta): {}", on_upper(s.liquids)),
@@ -5845,6 +5886,8 @@ impl Key {
             Key::SwayWater => s.sway_water = !s.sway_water,
             Key::PlantPush => s.plant_push = !s.plant_push,
             Key::Punch => s.punch = !s.punch,
+            Key::Banners => s.banners = !s.banners,
+            Key::Doors => s.doors = !s.doors,
             Key::Projectiles => s.projectiles = !s.projectiles,
             Key::Explosions => s.explosions = !s.explosions,
             Key::Liquids => s.liquids = !s.liquids,
@@ -5934,6 +5977,8 @@ impl Key {
             Key::PlantPush => s.plant_push = d.plant_push,
             Key::WaveSpeed => s.wave_speed = d.wave_speed,
             Key::Punch => s.punch = d.punch,
+            Key::Banners => s.banners = d.banners,
+            Key::Doors => s.doors = d.doors,
             Key::Projectiles => s.projectiles = d.projectiles,
             Key::Explosions => s.explosions = d.explosions,
             Key::Liquids => s.liquids = d.liquids,
@@ -5971,8 +6016,8 @@ pub fn page_rows(cat: usize) -> Vec<Row> {
         1 => vec![Keys(vec![Deaths, MobLife]), Keys(vec![MobVar, Anim]), Keys(vec![JointForce]), Keys(vec![JointBlood]), Keys(vec![RagdollLimit]), Keys(vec![Punch])],
         2 => vec![Keys(vec![BlockPhysics, Activation]), Keys(vec![BlockLife, ObjScale]), Keys(vec![BlockVar, Anim])],
         3 => vec![Keys(vec![Waves, Boats]), Keys(vec![WaveHeight]), Keys(vec![WaveSpeed]), Keys(vec![Foam]), Note("Waves need a Horizon shader pack or the mod's own look.")],
-        4 => vec![Keys(vec![SwayLeaves, Plants]), Keys(vec![SwayVines]), Keys(vec![SwayWater]), Keys(vec![SwayStrength]), Keys(vec![PlantPush]), Note("The wind's strength per weather is on the Weather page.")],
-        5 => vec![Keys(vec![CapeOn, CapeRange]), Keys(vec![HideCape]), Note("Only capes are cloth. Leads and fishing lines are ropes:"), Keys(vec![Ropes])],
+        4 => vec![Keys(vec![SwayLeaves, Plants]), Keys(vec![SwayVines]), Keys(vec![SwayWater]), Keys(vec![SwayStrength]), Keys(vec![PlantPush, Doors]), Note("The wind's strength per weather is on the Weather page.")],
+        5 => vec![Keys(vec![CapeOn, CapeRange]), Keys(vec![HideCape]), Keys(vec![Banners]), Note("Leads and fishing lines hang and swing as ropes:"), Keys(vec![Ropes])],
         6 => vec![Keys(vec![Projectiles]), Keys(vec![Explosions])],
         7 => vec![Keys(vec![Liquids]), Keys(vec![LiquidAmount]), Keys(vec![Splashes])],
         8 => vec![Keys(vec![Snow, MobTrails]), Keys(vec![SnowDepth]), Keys(vec![SnowPowder])],

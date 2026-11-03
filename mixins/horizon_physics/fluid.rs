@@ -16,8 +16,12 @@ fn horizon_physics_fluid(
         Some(c) => sway::snow_in_section(c.x, sy, c.z),
         None => Vec::new(),
     };
+    let doors = match region[1][1] {
+        Some(c) => sway::doors_in_section(c.x, sy, c.z),
+        None => Vec::new(),
+    };
     let marks = sway::marks_water();
-    if (!marks && dents.is_empty()) || !sway::fluid_enter() {
+    if (!marks && dents.is_empty() && doors.is_empty()) || !sway::fluid_enter() {
         return ::core::ops::ControlFlow::Continue(());
     }
     let mut done = mesher.mesh_reusing(region, sy, ::core::mem::take(out), scratch);
@@ -43,6 +47,30 @@ fn horizon_physics_fluid(
             let code = sway::water_code(cx, y, cz, water, -2);
             v.pos[1] += code as f32 * sway::MARK_STEP;
         }
+    }
+    // A swinging door is drawn by the world hook: its own quads (door sprites, inside its block)
+    // are left out until it settles.
+    if !doors.is_empty() && done.solid.len() % 4 == 0 {
+        let door_layers: std::collections::HashSet<u32> = mesher
+            .render
+            .sprite_layers
+            .iter()
+            .filter(|(n, _)| n.contains("_door_") && !n.contains("trapdoor"))
+            .map(|(_, l)| *l)
+            .collect();
+        let inside = |q: &[TerrainVertex], c: [i32; 3]| {
+            q.iter().all(|v| {
+                (0..3).all(|k| v.pos[k] >= c[k] as f32 - 1e-3 && v.pos[k] <= c[k] as f32 + 1.0 + 1e-3)
+            })
+        };
+        let mut solid: Vec<TerrainVertex> = Vec::with_capacity(done.solid.len());
+        for q in done.solid.chunks_exact(4) {
+            let door = door_layers.contains(&u32::from(q[0].layer & 0x7fff)) && doors.iter().any(|c| inside(q, *c));
+            if !door {
+                solid.extend_from_slice(q);
+            }
+        }
+        done.solid = solid;
     }
     let snow = ["minecraft:block/snow", "block/snow", "snow"]
         .iter()

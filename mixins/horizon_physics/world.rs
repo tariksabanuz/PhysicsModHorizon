@@ -35,6 +35,55 @@ fn horizon_physics_world(game: &crate::game::Game<'_>, camera: glam::DVec3, out:
     {
         hp::replay_at([p.position.x, p.position.y + 1.5, p.position.z], p.yaw, [r.u0, r.v0, r.u1, r.v1]);
     }
+    // Doors near the camera: one that opened or shut swings round its hinge (the mesher leaves
+    // its own quads out meanwhile), and the swings are drawn here.
+    {
+        use horizon_client_render::native_horizon_physics_sway as sway;
+        if sway::doors_on() {
+            let prop = |state, key: &str| -> Option<String> {
+                game.pack.assets.registry.state(state).and_then(|s| s.properties.get(key)).cloned()
+            };
+            let (cx, cy, cz) = (camera.x.floor() as i32, camera.y.floor() as i32, camera.z.floor() as i32);
+            for x in cx - 6..=cx + 6 {
+                for z in cz - 6..=cz + 6 {
+                    for y in cy - 3..=cy + 3 {
+                        let state = game.world.block(x, y, z);
+                        let f = facts.get(state);
+                        if !f.name.ends_with("_door") || prop(state, "half").as_deref() != Some("lower") {
+                            continue;
+                        }
+                        let Some(old) = sway::door_seen([x, y, z], state.0) else {
+                            continue;
+                        };
+                        let mut was_state = state;
+                        was_state.0 = old;
+                        let old = was_state;
+                        let was = facts.get(old);
+                        if was.name != f.name || prop(old, "open") == prop(state, "open") || prop(old, "facing") != prop(state, "facing") {
+                            continue;
+                        }
+                        let (Some(from), Some(to)) = (was.outline.first().copied(), f.outline.first().copied()) else {
+                            continue;
+                        };
+                        let id = f.name.trim_start_matches("minecraft:").trim_start_matches("waxed_");
+                        let uv = |half: &str| game.gui.atlas.sprites.get(&format!("block/{id}_{half}")).map(|r| [r.u0, r.v0, r.u1, r.v1]);
+                        if let (Some(bottom), Some(top)) = (uv("bottom"), uv("top")) {
+                            sway::door_swing([x, y, z], from, to, bottom, top, game.world.layout().min_y());
+                        }
+                    }
+                }
+            }
+            sway::doors_forget(|p| (p[0] - cx).abs() <= 8 && (p[2] - cz).abs() <= 8 && (p[1] - cy).abs() <= 5);
+            let light = |x: i32, y: i32, z: i32| -> u32 {
+                let l = game.world.light(x, y, z);
+                (u32::from(l >> 4) * 16) | ((u32::from(l & 15) * 16) << 8)
+            };
+            let lit = hp::FnWorld(|_: i32, _: i32, _: i32| hp::Cell::Air, light);
+            for (s, angle) in sway::door_swings() {
+                hp::door_draw(s.pos, s.from, s.pivot, angle, s.bottom, s.top, [camera.x, camera.y, camera.z], &lit, out);
+            }
+        }
+    }
     // Smoke: one layer of blocks around the camera each frame.
     if hp::smoke_on() {
         let (y, x0, x1, z0, z1) = hp::scan_layer([camera.x, camera.y, camera.z]);

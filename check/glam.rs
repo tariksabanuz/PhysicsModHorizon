@@ -48,3 +48,9 @@ impl Vec3 {
     pub fn normalize(self) -> Self { self }
 }
 impl Quat { pub fn from_rotation_arc(_: Vec3, _: Vec3) -> Self { Quat([0.0; 4]) } }
+
+impl Mat4 {
+    pub fn from_scale(_: Vec3) -> Self { Mat4 }
+    pub fn to_cols_array_2d(&self) -> [[f32; 4]; 4] { [[0.0; 4]; 4] }
+}
+impl AddAssign for DVec3 { fn add_assign(&mut self, o: DVec3) { self.x += o.x; self.y += o.y; self.z += o.z; } }

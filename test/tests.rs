@@ -1633,3 +1633,48 @@ fn a_hit_knocks_a_piece_away() {
     run(&mut p, &w, 1.0);
     assert!(p.bodies[0].x.z > before.z + 1.0, "{:?} -> {:?}", before, p.bodies[0].x);
 }
+
+#[test]
+fn doors_swing_round_their_hinge_and_settle() {
+    use crate::native_horizon_physics_sway as sway;
+    // Closed against the north side, open against the west side: they share the north-west
+    // column, and a quarter turn takes the one onto the other.
+    let closed = [0.0, 0.0, 0.0, 1.0, 1.0, 0.1875];
+    let open = [0.0, 0.0, 0.0, 0.1875, 1.0, 1.0];
+    let (pivot, sign) = sway::door_hinge(closed, open).unwrap();
+    assert!((pivot[0] - 0.09375).abs() < 1e-9 && (pivot[1] - 0.09375).abs() < 1e-9);
+    // The closed panel's far end, turned by the sign's quarter: lands on the open panel.
+    let (x, z) = (1.0 - pivot[0], 0.09375 - pivot[1]);
+    let a = sign * std::f64::consts::FRAC_PI_2;
+    let (nx, nz) = (x * a.cos() + z * a.sin(), -x * a.sin() + z * a.cos());
+    assert!((nx + pivot[0] - 0.09375).abs() < 1e-6 && (nz + pivot[1] - 1.0).abs() < 1e-6, "{nx} {nz}");
+    // Starts still, goes past the stop, ends there.
+    assert!(sway::door_progress(0.0).abs() < 1e-9);
+    let most = (1..90).map(|i| sway::door_progress(f64::from(i) * 0.01)).fold(0.0, f64::max);
+    assert!(most > 1.02 && most < 1.2, "overshoot {most}");
+    assert_eq!(sway::door_progress(sway::DOOR_TIME), 1.0);
+    assert!(sway::door_hinge(closed, [0.5, 0.0, 0.5, 1.0, 1.0, 1.0]).is_none());
+}
+
+#[test]
+fn a_banner_flag_bends_but_its_pole_stays() {
+    use crate::native_horizon_physics_sway as sway;
+    // The model matrix: block (0, 0, 0), no turn, scaled 2/3 with y and z flipped.
+    let k = 2.0f32 / 3.0;
+    let m = [[k, 0.0, 0.0, 0.0], [0.0, -k, 0.0, 0.0], [0.0, 0.0, -k, 0.0], [0.5, 0.0, 0.5, 1.0]];
+    let to_world = |p: [f32; 3]| [0.5 + p[0] / 16.0 * k, -p[1] / 16.0 * k, 0.5 - p[2] / 16.0 * k];
+    let quad = |pts: [[f32; 3]; 4]| pts.map(|p| Vertex { pos: to_world(p), uv: [0.0; 2], layer: 0, color: 0, light: 0, normal: [0; 4], glint_uv: [0.0; 2] });
+    let mut verts = Vec::new();
+    // The flag's front face (z -2) from the top (y -44) down 40.
+    verts.extend(quad([[-10.0, -44.0, -2.0], [10.0, -44.0, -2.0], [10.0, -4.0, -2.0], [-10.0, -4.0, -2.0]]));
+    // The pole's front face (z -1), 2 wide.
+    verts.extend(quad([[-1.0, -30.0, -1.0], [1.0, -30.0, -1.0], [1.0, 12.0, -1.0], [-1.0, 12.0, -1.0]]));
+    let before: Vec<[f32; 3]> = verts.iter().map(|v| v.pos).collect();
+    sway::banner_deform(&mut verts, m, [3, 64, 7], 12.5);
+    let moved = |i: usize| (0..3).map(|c| (verts[i].pos[c] - before[i][c]).abs()).sum::<f32>();
+    assert!(moved(0) < 1e-4 && moved(1) < 1e-4, "the top edge hangs where it was");
+    assert!(moved(2) > 1e-3 || moved(3) > 1e-3, "the free end moves");
+    for i in 4..8 {
+        assert!(moved(i) < 1e-6, "the pole stays");
+    }
+}

@@ -1112,3 +1112,295 @@ pub fn physics_button_at(x: f32, y: f32) -> bool {
 fn physics_wanted_and_in(r: [f32; 4], x: f32, y: f32) -> bool {
     physics_button_wanted() && x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3]
 }
+
+// ---------------------------------------------------------------------------------------------
+// Banners as cloth: the flag of each banner, drawn every frame by the block entity renderer, is
+// bent the way a hanging cloth goes: it lifts and blows out with the wind, and waves run down it.
+
+static BANNERS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+static DOORS_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// The Cloth page's Banner Physics and the Dynamic Blocks page's Swinging Doors.
+pub fn set_cloth(banners: bool, doors: bool) {
+    BANNERS.store(banners, std::sync::atomic::Ordering::Relaxed);
+    DOORS_ON.store(doors, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn banners_on() -> bool {
+    BANNERS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn doors_on() -> bool {
+    DOORS_ON.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+thread_local! {
+    static IN_BANNER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The banner hook's guard against itself: true once.
+pub fn banner_enter() -> bool {
+    IN_BANNER.with(|c| !c.replace(true))
+}
+
+pub fn banner_leave() {
+    IN_BANNER.with(|c| c.set(false));
+}
+
+/// The wind over the land at time `t` (seconds): its direction (x, z) and strength, as the
+/// terrain shader blows the plants.
+pub fn wind_vector(t: f64) -> [f64; 3] {
+    let a = 0.7 + t * 0.013 + 0.6 * (t * 0.071).sin();
+    let strength = current().map_or(1.0, |s| f64::from(s.wind));
+    [a.cos(), a.sin(), strength]
+}
+
+/// An affine matrix (column-major, as glam's `to_cols_array_2d`): a point through it, a direction
+/// through it, and its inverse.
+fn affine_point(m: &[[f32; 4]; 4], p: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|r| m[0][r] * p[0] + m[1][r] * p[1] + m[2][r] * p[2] + m[3][r])
+}
+
+fn affine_dir(m: &[[f32; 4]; 4], p: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|r| m[0][r] * p[0] + m[1][r] * p[1] + m[2][r] * p[2])
+}
+
+fn affine_inverse(m: &[[f32; 4]; 4]) -> Option<[[f32; 4]; 4]> {
+    let a = |r: usize, c: usize| m[c][r];
+    let det = a(0, 0) * (a(1, 1) * a(2, 2) - a(1, 2) * a(2, 1)) - a(0, 1) * (a(1, 0) * a(2, 2) - a(1, 2) * a(2, 0))
+        + a(0, 2) * (a(1, 0) * a(2, 1) - a(1, 1) * a(2, 0));
+    if det.abs() < 1e-12 {
+        return None;
+    }
+    let i = 1.0 / det;
+    // The 3x3 part's inverse, row r column c.
+    let inv3 = [
+        [(a(1, 1) * a(2, 2) - a(1, 2) * a(2, 1)) * i, (a(0, 2) * a(2, 1) - a(0, 1) * a(2, 2)) * i, (a(0, 1) * a(1, 2) - a(0, 2) * a(1, 1)) * i],
+        [(a(1, 2) * a(2, 0) - a(1, 0) * a(2, 2)) * i, (a(0, 0) * a(2, 2) - a(0, 2) * a(2, 0)) * i, (a(0, 2) * a(1, 0) - a(0, 0) * a(1, 2)) * i],
+        [(a(1, 0) * a(2, 1) - a(1, 1) * a(2, 0)) * i, (a(0, 1) * a(2, 0) - a(0, 0) * a(2, 1)) * i, (a(0, 0) * a(1, 1) - a(0, 1) * a(1, 0)) * i],
+    ];
+    let t = [m[3][0], m[3][1], m[3][2]];
+    let mut out = [[0.0f32; 4]; 4];
+    for c in 0..3 {
+        for r in 0..3 {
+            out[c][r] = inv3[r][c];
+        }
+    }
+    for r in 0..3 {
+        out[3][r] = -(inv3[r][0] * t[0] + inv3[r][1] * t[1] + inv3[r][2] * t[2]);
+    }
+    out[3][3] = 1.0;
+    Some(out)
+}
+
+/// Bends the flag of a banner drawn into `verts` (whole quads, as the renderer drew them) under
+/// model matrix `m` (column-major; the banner's, before its parts: model units of a sixteenth
+/// of a block, y down), at banner position `pos`, time `t` (seconds). The pole and the bar stay.
+pub fn banner_deform(verts: &mut [crate::mesher::Vertex], m: [[f32; 4]; 4], pos: [i32; 3], t: f64) {
+    if verts.len() % 4 != 0 || verts.is_empty() {
+        return;
+    }
+    let Some(inv) = affine_inverse(&m) else {
+        return;
+    };
+    let local = |p: [f32; 3]| affine_point(&inv, p).map(|c| c * 16.0);
+    // Which quads are the flag's: the flag lies in front of the pole (its back face at the
+    // pole's front), the bar and the pole are narrow.
+    let flag: Vec<bool> = verts
+        .chunks_exact(4)
+        .map(|q| {
+            let l: Vec<[f32; 3]> = q.iter().map(|v| local(v.pos)).collect();
+            let (x0, x1) = l.iter().fold((f32::MAX, f32::MIN), |a, p| (a.0.min(p[0]), a.1.max(p[0])));
+            let (y0, y1) = l.iter().fold((f32::MAX, f32::MIN), |a, p| (a.0.min(p[1]), a.1.max(p[1])));
+            l.iter().any(|p| p[2] < -1.5) || (l.iter().all(|p| (p[2] + 1.0).abs() < 0.1) && x1 - x0 > 3.0 && y1 - y0 > 3.0)
+        })
+        .collect();
+    let (mut top, mut bottom) = (f32::MAX, f32::MIN);
+    for (q, f) in verts.chunks_exact(4).zip(&flag) {
+        if *f {
+            for v in q {
+                let y = local(v.pos)[1];
+                top = top.min(y);
+                bottom = bottom.max(y);
+            }
+        }
+    }
+    let height = bottom - top;
+    if height < 4.0 {
+        return;
+    }
+    let w = wind_vector(t);
+    let n = affine_dir(&m, [0.0, 0.0, 1.0]);
+    let nl = (n[0] * n[0] + n[2] * n[2]).sqrt().max(1e-6);
+    // How hard the wind blows into the flag's face (its sign: which way it goes out).
+    let into = (w[0] as f32 * n[0] / nl + w[1] as f32 * n[2] / nl) * w[2] as f32;
+    let seed = (pos[0] as f32 * 0.37 + pos[2] as f32 * 0.71 + pos[1] as f32 * 0.13).rem_euclid(1.0) * 6.28;
+    let time = t as f32;
+    let gust = 0.75 + 0.25 * (time * 0.9 + seed).sin();
+    let lift = (into * gust * 0.32).clamp(-1.05, 1.05);
+    let strength = (w[2] as f32).clamp(0.2, 3.0);
+    let (s, c) = lift.sin_cos();
+    for (q, f) in verts.chunks_exact_mut(4).zip(&flag) {
+        if !*f {
+            continue;
+        }
+        for v in q {
+            let mut l = local(v.pos);
+            let d = l[1] - top;
+            let k = (d / height).clamp(0.0, 1.0);
+            // Lifted out from its top edge by the wind.
+            l[1] = top + d * c;
+            l[2] += d * s;
+            // Waves running down the cloth, bigger at the free end and in a strong wind.
+            let amp = k.powf(1.3) * (0.5 + 0.9 * strength);
+            l[2] += amp * ((k * 7.0 - time * (3.0 + strength) + l[0] * 0.18 + seed).sin() * 0.8 + (k * 13.0 - time * 5.1 + seed * 2.0).sin() * 0.25);
+            l[0] += amp * 0.25 * (k * 5.0 - time * 2.3 + seed).sin();
+            v.pos = affine_point(&m, l.map(|c| c / 16.0));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Swinging doors: when a door opens or shuts, the block's own (meshed) door is hidden for a
+// moment and a panel swings round its hinge instead, overshoots and settles.
+
+#[derive(Clone, Debug)]
+pub struct DoorSwing {
+    /// The lower half's block.
+    pub pos: [i32; 3],
+    /// The panel before (block space, one half's box), the hinge (x, z in block space) and the
+    /// quarter turn's sign.
+    pub from: [f64; 6],
+    pub pivot: [f64; 2],
+    pub sign: f64,
+    /// The lower and upper halves' sprites (HUD atlas uv) and tint.
+    pub bottom: [f32; 4],
+    pub top: [f32; 4],
+    start: std::time::Instant,
+    min_y: i32,
+}
+
+struct Doors {
+    swings: Vec<DoorSwing>,
+    dirty: std::collections::HashSet<(i32, i32, i32)>,
+    /// Doors seen near the camera: lower half → its state.
+    seen: std::collections::HashMap<[i32; 3], u32>,
+}
+
+static DOORS: Mutex<Option<Doors>> = Mutex::new(None);
+
+fn with_doors<R>(f: impl FnOnce(&mut Doors) -> R) -> R {
+    let mut g = DOORS.lock().unwrap_or_else(|e| e.into_inner());
+    f(g.get_or_insert_with(|| Doors { swings: Vec::new(), dirty: Default::default(), seen: Default::default() }))
+}
+
+/// How long a swing takes, settling included (seconds).
+pub const DOOR_TIME: f64 = 0.9;
+
+/// How far round a swing is at `t` seconds (0 the old place, 1 the new): fast, past the stop,
+/// back, and still.
+pub fn door_progress(t: f64) -> f64 {
+    if t >= DOOR_TIME {
+        return 1.0;
+    }
+    let t = t.max(0.0);
+    1.0 - (-7.5 * t).exp() * ((11.0 * t).cos() + 0.68 * (11.0 * t).sin())
+}
+
+/// The quarter turn that takes box `from` onto box `to` (block space): the hinge in the column
+/// they share, and the turn's sign. None when they do not share a corner.
+pub fn door_hinge(from: [f64; 6], to: [f64; 6]) -> Option<([f64; 2], f64)> {
+    let ix = (from[0].max(to[0]), from[3].min(to[3]));
+    let iz = (from[2].max(to[2]), from[5].min(to[5]));
+    if ix.1 - ix.0 < 1e-3 || iz.1 - iz.0 < 1e-3 {
+        return None;
+    }
+    let pivot = [(ix.0 + ix.1) * 0.5, (iz.0 + iz.1) * 0.5];
+    let fc = [(from[0] + from[3]) * 0.5 - pivot[0], (from[2] + from[5]) * 0.5 - pivot[1]];
+    let tc = [(to[0] + to[3]) * 0.5 - pivot[0], (to[2] + to[5]) * 0.5 - pivot[1]];
+    // Turning (x, z) by +90 degrees about y: (x, z) -> (z, -x).
+    let plus = [fc[1], -fc[0]];
+    let d = |a: [f64; 2]| (a[0] - tc[0]).powi(2) + (a[1] - tc[1]).powi(2);
+    let sign = if d(plus) < d([-plus[0], -plus[1]]) { 1.0 } else { -1.0 };
+    Some((pivot, sign))
+}
+
+fn section_of(p: [i32; 3], min_y: i32) -> (i32, i32, i32) {
+    (p[0] >> 4, (p[1] - min_y) >> 4, p[2] >> 4)
+}
+
+/// The door at `pos` (its lower half) was `state` this frame. Returns the state it was last
+/// seen as when that differs (the caller then starts a swing).
+pub fn door_seen(pos: [i32; 3], state: u32) -> Option<u32> {
+    with_doors(|d| d.seen.insert(pos, state).filter(|old| *old != state))
+}
+
+/// Forgets the doors not near the camera any more.
+pub fn doors_forget(keep: impl Fn([i32; 3]) -> bool) {
+    with_doors(|d| d.seen.retain(|p, _| keep(*p)));
+}
+
+/// A door starts swinging from box `from` to box `to`.
+pub fn door_swing(pos: [i32; 3], from: [f64; 6], to: [f64; 6], bottom: [f32; 4], top: [f32; 4], min_y: i32) {
+    if !doors_on() {
+        return;
+    }
+    let Some((pivot, sign)) = door_hinge(from, to) else {
+        return;
+    };
+    with_doors(|d| {
+        d.swings.retain(|s| s.pos != pos);
+        if d.swings.len() >= 32 {
+            return;
+        }
+        d.swings.push(DoorSwing { pos, from, pivot, sign, bottom, top, start: std::time::Instant::now(), min_y });
+        d.dirty.insert(section_of(pos, min_y));
+        d.dirty.insert(section_of([pos[0], pos[1] + 1, pos[2]], min_y));
+    });
+}
+
+/// The swings now, each with its angle (radians); finished ones are dropped (their sections
+/// are meshed again, with the door back).
+pub fn door_swings() -> Vec<(DoorSwing, f64)> {
+    with_doors(|d| {
+        let now = std::time::Instant::now();
+        let mut out = Vec::new();
+        let mut done = Vec::new();
+        d.swings.retain(|s| {
+            let t = now.duration_since(s.start).as_secs_f64();
+            if t >= DOOR_TIME {
+                done.push((s.pos, s.min_y));
+                return false;
+            }
+            out.push((s.clone(), s.sign * std::f64::consts::FRAC_PI_2 * door_progress(t)));
+            true
+        });
+        for (p, min_y) in done {
+            d.dirty.insert(section_of(p, min_y));
+            d.dirty.insert(section_of([p[0], p[1] + 1, p[2]], min_y));
+        }
+        out
+    })
+}
+
+/// The sections to mesh again for the doors.
+pub fn doors_take_dirty() -> Vec<(i32, i32, i32)> {
+    with_doors(|d| d.dirty.drain().collect())
+}
+
+/// The blocks of the section (chunk `cx`, index `sy`, chunk `cz`) whose door the mesher leaves
+/// out (swinging now), section-relative.
+pub fn doors_in_section(cx: i32, sy: i32, cz: i32) -> Vec<[i32; 3]> {
+    with_doors(|d| {
+        let mut out = Vec::new();
+        for s in &d.swings {
+            for dy in 0..2 {
+                let p = [s.pos[0], s.pos[1] + dy, s.pos[2]];
+                if section_of(p, s.min_y) == (cx, sy, cz) {
+                    out.push([p[0] & 15, (p[1] - s.min_y) & 15, p[2] & 15]);
+                }
+            }
+        }
+        out
+    })
+}
