@@ -96,6 +96,9 @@ pub struct Sway {
     pub wave_height: f32,
     pub sway: f32,
     pub foam: bool,
+    /// Plants bend away from the player walking through them, and how fast the waves roll.
+    pub push: bool,
+    pub wave_speed: f32,
 }
 
 /// The Ocean and Dynamic Blocks pages' settings, as the shader takes them.
@@ -107,11 +110,13 @@ pub struct SwayOptions {
     pub wave_height: f32,
     pub sway: f32,
     pub foam: bool,
+    pub push: bool,
+    pub wave_speed: f32,
 }
 
 impl Default for SwayOptions {
     fn default() -> Self {
-        SwayOptions { leaves: true, vines: true, water_plants: true, wave_height: 1.0, sway: 1.0, foam: true }
+        SwayOptions { leaves: true, vines: true, water_plants: true, wave_height: 1.0, sway: 1.0, foam: true, push: true, wave_speed: 1.0 }
     }
 }
 
@@ -158,6 +163,8 @@ pub fn set<'a>(key: usize, sprites: impl FnOnce() -> Vec<(&'a str, u32)>, waves:
         wave_height: o.wave_height,
         sway: o.sway,
         foam: o.foam,
+        push: o.push,
+        wave_speed: o.wave_speed,
     };
     let changed = g.as_ref() != Some(&new);
     *g = Some(new);
@@ -229,10 +236,12 @@ pub fn wgsl_with(s: &Sway, shade: bool) -> Option<String> {
     let _ = write!(w, "const HORIZON_PHYSICS_WIND: f32 = {wind:.3};\nconst HORIZON_PHYSICS_SHADE: bool = {shade};\n");
     let _ = write!(
         w,
-        "const HORIZON_PHYSICS_WAVE_HEIGHT: f32 = {:.3};\nconst HORIZON_PHYSICS_SWAY_STRENGTH: f32 = {:.3};\nconst HORIZON_PHYSICS_FOAM: f32 = {:.1};\n",
+        "const HORIZON_PHYSICS_WAVE_HEIGHT: f32 = {:.3};\nconst HORIZON_PHYSICS_SWAY_STRENGTH: f32 = {:.3};\nconst HORIZON_PHYSICS_FOAM: f32 = {:.1};\nconst HORIZON_PHYSICS_PUSH: f32 = {:.1};\nconst HORIZON_PHYSICS_WAVE_SPEED: f32 = {:.3};\n",
         s.wave_height.max(0.0),
         s.sway.max(0.0),
-        if s.foam { 1.0 } else { 0.0 }
+        if s.foam { 1.0 } else { 0.0 },
+        if s.push { 1.0 } else { 0.0 },
+        s.wave_speed.max(0.05)
     );
     w.push_str(&WGSL_BODY.replace("//SWELL//", &swell_wgsl()));
     Some(w)
@@ -283,7 +292,8 @@ fn smoothstep(a: f64, b: f64, x: f64) -> f64 {
 /// The water's clock the shader uses, from the world's game time (ticks) and the partial tick.
 pub fn water_time(game_time: i64, partial: f64) -> f64 {
     let f = ((game_time % 24000) as f32 + partial as f32) / 24000.0;
-    f64::from(f) * 1200.0
+    let speed = current().map_or(1.0, |s| s.wave_speed.max(0.05));
+    f64::from(f * 1200.0 * speed)
 }
 
 /// The water surface's movement at world point (x, z), time `t` (`water_time`), openness `open`
@@ -421,7 +431,7 @@ fn horizon_physics_wave(w: vec4<f32>, p: vec2<f32>, t: f32, seed: f32, pace: f32
 }
 // The water's clock: the world's time, so the game can follow the same waves (a boat on them).
 fn horizon_physics_water_time() -> f32 {
-    return frame.game_time * 1200.0;
+    return frame.game_time * 1200.0 * HORIZON_PHYSICS_WAVE_SPEED;
 }
 // How rough the water is: the wind setting.
 fn horizon_physics_storm() -> f32 {
@@ -568,6 +578,24 @@ fn horizon_physics_sway(pos: vec3<f32>, raw: vec3<f32>, uv: vec2<f32>, layer: u3
             off = vec3(f.x + bend * 0.5, 0.0, f.y - bend * 0.3) * 0.08;
         }
         default: {}
+    }
+    // Walking through: a plant (grass, flowers, seagrass) bends away from the player's feet,
+    // the more the closer, its top the most.
+    if (HORIZON_PHYSICS_PUSH > 0.5 && (kind == 2u || kind == 3u || kind == 6u || kind == 7u)) {
+        let top_half = kind == 3u || kind == 7u;
+        let foot = select(root, vec3(root.x, root.y - 1.0, root.z), top_half);
+        let hh = select(h, (1.0 + h) * 0.5, top_half);
+        let feet = frame.camera_position - vec3(0.0, 1.62, 0.0);
+        let d = foot.xz - feet.xz;
+        let r = length(d);
+        let dy = foot.y - feet.y;
+        if (r < 1.2 && dy > -1.5 && dy < 0.6) {
+            let k = (1.0 - smoothstep(0.25, 1.2, r)) * (1.0 - smoothstep(0.2, 0.6, abs(dy + 0.2)));
+            let away = d / max(r, 0.05);
+            let bend = hh * hh * k * 0.55;
+            let lift = select(1.0, 2.0, top_half);
+            off += vec3(away.x * bend * lift, -bend * 0.45 * lift, away.y * bend * lift);
+        }
     }
     // The water's own shape keeps its height setting; the plants sway as far as set.
     let k = select(HORIZON_PHYSICS_SWAY_STRENGTH, 1.0, kind == 5u || kind == 9u);

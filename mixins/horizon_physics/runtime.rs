@@ -19,7 +19,7 @@ use crate::mesher::Vertex;
 
 pub const ID: &str = "horizon_physics";
 pub const NAME: &str = "Horizon Physics";
-pub const VERSION: &str = "0.12.1";
+pub const VERSION: &str = "0.13.0";
 pub const DESCRIPTION: &str =
     "By tariksabanuz. Blocks crumble and blow apart, ragdolls, items, smoke, ropes, capes, liquids, waves and swaying plants.";
 
@@ -145,6 +145,12 @@ pub struct Settings {
     pub sway_water: bool,
     /// How far they sway.
     pub sway_strength: f32,
+    /// Grass, flowers and seagrass bend away from you as you walk through them.
+    pub plant_push: bool,
+    /// How fast the waves roll.
+    pub wave_speed: f32,
+    /// Ragdolls and pieces are knocked away when you hit them.
+    pub punch: bool,
     /// Snowballs and eggs shatter into pieces where they hit.
     pub projectiles: bool,
     /// How many droplets poured water and lava make.
@@ -237,6 +243,9 @@ impl Default for Settings {
             sway_vines: true,
             sway_water: true,
             sway_strength: 1.0,
+            plant_push: true,
+            wave_speed: 1.0,
+            punch: true,
             projectiles: true,
             liquid_amount: 1.0,
             splashes: true,
@@ -459,6 +468,9 @@ impl Settings {
         t.push_str(&format!("sway_vines={}\n", self.sway_vines as u8));
         t.push_str(&format!("sway_water={}\n", self.sway_water as u8));
         t.push_str(&format!("sway_strength={}\n", self.sway_strength));
+        t.push_str(&format!("plant_push={}\n", self.plant_push as u8));
+        t.push_str(&format!("wave_speed={}\n", self.wave_speed));
+        t.push_str(&format!("punch={}\n", self.punch as u8));
         t.push_str(&format!("projectiles={}\n", self.projectiles as u8));
         t.push_str(&format!("liquid_amount={}\n", self.liquid_amount));
         t.push_str(&format!("splashes={}\n", self.splashes as u8));
@@ -565,6 +577,9 @@ impl Settings {
                     "sway_vines" => s.sway_vines = on,
                     "sway_water" => s.sway_water = on,
                     "sway_strength" => s.sway_strength = f.clamp(0.0, 3.0),
+                    "plant_push" => s.plant_push = on,
+                    "wave_speed" => s.wave_speed = f.clamp(0.25, 3.0),
+                    "punch" => s.punch = on,
                     "projectiles" => s.projectiles = on,
                     "liquid_amount" => s.liquid_amount = f.clamp(0.0, 3.0),
                     "splashes" => s.splashes = on,
@@ -2618,6 +2633,46 @@ pub fn frame(dim: u8, camera: [f64; 3], white: [f32; 4], world: &dyn World, out:
     });
 }
 
+/// The player hit something: a piece in the way, from the eye along the look (yaw and pitch in
+/// degrees), is knocked away. True when one was.
+pub fn punch(eye: [f64; 3], yaw: f32, pitch: f32) -> bool {
+    let st = settings();
+    if !ENABLED.load(Ordering::Relaxed) || !st.punch {
+        return false;
+    }
+    let (y, p) = (f64::from(yaw).to_radians(), f64::from(pitch).to_radians());
+    let dir = v3(-y.sin() * p.cos(), -p.sin(), y.cos() * p.cos());
+    let hit = with(|s| s.physics.punch(v3(eye[0], eye[1], eye[2]), dir, 3.0, 6.0));
+    if hit && st.impact_volume > 0.0 {
+        let mut q = SOUNDS.lock().unwrap_or_else(|e| e.into_inner());
+        q.push(("minecraft:entity.player.attack.weak", eye, 0.6 * st.impact_volume, 1.0));
+    }
+    hit
+}
+
+/// Rain landing on water at `at` (its surface): a ring spreading on the water and a few drops.
+pub fn rain_ripple(at: [f64; 3]) {
+    let st = settings();
+    if !ENABLED.load(Ordering::Relaxed) || !st.weather || st.op_rain <= 0.0 {
+        return;
+    }
+    with(|s| {
+        let x = v3(at[0], at[1] + 0.01, at[2]);
+        let rng = &mut s.env.rng;
+        let mut ring = Puff::new(FxKind::Foam, x, V3::default(), rng.range(0.06, 0.1), rng.range(0.45, 0.7), [0.8, 0.86, 0.95], [0.7, 0.78, 0.9], rng);
+        ring.alpha *= 0.55 * f64::from(st.op_rain);
+        s.env.puff(ring);
+        for _ in 0..2 {
+            let rng = &mut s.env.rng;
+            let r = rng.unit();
+            let v = v3(r.x * 0.4, rng.range(0.8, 1.6), r.z * 0.4);
+            let mut d = Puff::new(FxKind::Dust, x, v, rng.range(0.01, 0.018), rng.range(0.2, 0.3), [0.62, 0.72, 0.95], [0.75, 0.82, 0.97], rng);
+            d.alpha *= f64::from(st.op_rain);
+            s.env.puff(d);
+        }
+    });
+}
+
 /// Sounds waiting for the game: (event, position, volume, pitch).
 static SOUNDS: Mutex<Vec<(&'static str, [f64; 3], f32, f32)>> = Mutex::new(Vec::new());
 
@@ -3503,6 +3558,10 @@ impl Env {
             match p.kind {
                 FxKind::Smoke => {
                     shape.light = lit(p.x);
+                    // Smoke trapped under a ceiling thickens and darkens as more gathers.
+                    let dark = (p.held / 6.0).clamp(0.0, 0.55);
+                    shape.rgb = shape.rgb.map(|c| c * (1.0 - dark));
+                    shape.alpha = (shape.alpha * (1.0 + dark * 0.6)).min(1.0);
                     // Thicker in the middle of each puff, soft at its edge.
                     shape.core = 1.0;
                 }
@@ -3761,6 +3820,44 @@ impl Physics {
     /// The player (a column of 0.35 blocks round and 1.8 high standing at `feet`, moving at `vel`)
     /// shoves the pieces and ragdolls it walks into: out of its way, carried along at its speed,
     /// tumbling.
+    /// A hit from `eye` along `dir` (a unit vector): the first piece within `reach` is knocked
+    /// away (its whole ragdoll goes along), `speed` blocks a second. True when one was hit.
+    pub fn punch(&mut self, eye: V3, dir: V3, reach: f64, speed: f64) -> bool {
+        let mut best: Option<(usize, usize, f64)> = None;
+        for (oi, o) in self.objects.iter().enumerate() {
+            for i in o.first..o.first + o.count {
+                let b = &self.bodies[i];
+                let r = b.radius().max(0.12);
+                let to = b.x - eye;
+                let t = to.dot(dir);
+                if t < 0.0 || t > reach + r || (to - dir * t).len() > r {
+                    continue;
+                }
+                if best.is_none_or(|x| t < x.2) {
+                    best = Some((oi, i, t));
+                }
+            }
+        }
+        let Some((oi, i, t)) = best else {
+            return false;
+        };
+        let o = &mut self.objects[oi];
+        o.sleeping = false;
+        o.still = 0.0;
+        let push = (dir * 0.85 + v3(0.0, 0.4, 0.0)).norm() * speed;
+        for j in o.first..o.first + o.count {
+            let b = &mut self.bodies[j];
+            if j == i {
+                let r = eye + dir * t - b.x;
+                let mass = 1.0 / b.inv_mass.max(1e-9);
+                b.push(push * mass, r);
+            } else {
+                b.v = b.v + push * 0.35;
+            }
+        }
+        true
+    }
+
     pub fn shove(&mut self, feet: V3, vel: V3) {
         const RADIUS: f64 = 0.35;
         const HEIGHT: f64 = 1.8;
@@ -5501,7 +5598,7 @@ pub const CATEGORIES: [Category; 15] = [
 /// A setting on a page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
-    MaxObjects, McBreak, SimSpeed, Items, ItemSpin, Pvp, ItemBreak, Crack, Sprint, Eat, BlockParticles, ParticleLife, ParticleVar, Deaths, MobLife, MobVar, Anim, JointForce, JointBlood, RagdollLimit, BlockPhysics, Activation, BlockLife, ObjScale, BlockVar, CapeOn, CapeRange, HideCape, Ropes, ImpactVolume, WindVolume, WindForces, Weather, RainAmount, ThunderAmount, WindClear, WindRain, WindThunder, OpRain, OpSnow, OpDust, Collapse, CollapseDrops, CollapseTicks, CollapseLimit, Waves, WaveHeight, Boats, Foam, SwayLeaves, Plants, SwayVines, SwayWater, SwayStrength, Projectiles, Explosions, Liquids, LiquidAmount, Splashes, Snow, MobTrails, SnowDepth, SnowPowder, Smoke, Embers, SmokeAmount, SmokeOpacity, VanillaSmoke, AnimMotion, AnimParticle, AnimDuration, AnimAmount,
+    MaxObjects, McBreak, SimSpeed, Items, ItemSpin, Pvp, ItemBreak, Crack, Sprint, Eat, BlockParticles, ParticleLife, ParticleVar, Deaths, MobLife, MobVar, Anim, JointForce, JointBlood, RagdollLimit, BlockPhysics, Activation, BlockLife, ObjScale, BlockVar, CapeOn, CapeRange, HideCape, Ropes, ImpactVolume, WindVolume, WindForces, Weather, RainAmount, ThunderAmount, WindClear, WindRain, WindThunder, OpRain, OpSnow, OpDust, Collapse, CollapseDrops, CollapseTicks, CollapseLimit, Waves, WaveHeight, Boats, Foam, SwayLeaves, Plants, SwayVines, SwayWater, SwayStrength, PlantPush, WaveSpeed, Punch, Projectiles, Explosions, Liquids, LiquidAmount, Splashes, Snow, MobTrails, SnowDepth, SnowPowder, Smoke, Embers, SmokeAmount, SmokeOpacity, VanillaSmoke, AnimMotion, AnimParticle, AnimDuration, AnimAmount,
 }
 
 /// A slider's range and step.
@@ -5536,6 +5633,7 @@ fn slider(k: Key) -> Option<(f32, f32, f32)> {
         Key::CollapseLimit => (10.0, 1000.0, 10.0),
         Key::WaveHeight => (0.0, 3.0, 0.05),
         Key::SwayStrength => (0.0, 3.0, 0.05),
+        Key::WaveSpeed => (0.25, 3.0, 0.05),
         Key::LiquidAmount => (0.0, 3.0, 0.05),
         Key::SnowDepth => (0.1, 1.0, 0.05),
         Key::SmokeAmount => (0.0, 3.0, 0.05),
@@ -5600,6 +5698,9 @@ impl Key {
             Key::SwayVines => format!("Swaying Vines: {}", on_upper(s.sway_vines)),
             Key::SwayWater => format!("Swaying Water Plants: {}", on_upper(s.sway_water)),
             Key::SwayStrength => format!("Sway Strength: {}", decimal(s.sway_strength)),
+            Key::PlantPush => format!("Walking Bends Plants: {}", on_upper(s.plant_push)),
+            Key::WaveSpeed => format!("Wave Speed: {}", decimal(s.wave_speed)),
+            Key::Punch => format!("Interactive Ragdolls: {}", on_upper(s.punch)),
             Key::Projectiles => format!("Projectile Physics: {}", on_upper(s.projectiles)),
             Key::Explosions => format!("Explosion Physics: {}", on_upper(s.explosions)),
             Key::Liquids => format!("Liquid Physics (Beta): {}", on_upper(s.liquids)),
@@ -5656,6 +5757,7 @@ impl Key {
             Key::CollapseLimit => s.collapse_limit as f32,
             Key::WaveHeight => s.wave_height as f32,
             Key::SwayStrength => s.sway_strength as f32,
+            Key::WaveSpeed => s.wave_speed as f32,
             Key::LiquidAmount => s.liquid_amount as f32,
             Key::SnowDepth => s.snow_depth as f32,
             Key::SmokeAmount => s.smoke_amount as f32,
@@ -5705,6 +5807,7 @@ impl Key {
             Key::CollapseLimit => s.collapse_limit = v.round() as u32,
             Key::WaveHeight => s.wave_height = v,
             Key::SwayStrength => s.sway_strength = v,
+            Key::WaveSpeed => s.wave_speed = v,
             Key::LiquidAmount => s.liquid_amount = v,
             Key::SnowDepth => s.snow_depth = v,
             Key::SmokeAmount => s.smoke_amount = v,
@@ -5740,6 +5843,8 @@ impl Key {
             Key::Plants => s.plants = !s.plants,
             Key::SwayVines => s.sway_vines = !s.sway_vines,
             Key::SwayWater => s.sway_water = !s.sway_water,
+            Key::PlantPush => s.plant_push = !s.plant_push,
+            Key::Punch => s.punch = !s.punch,
             Key::Projectiles => s.projectiles = !s.projectiles,
             Key::Explosions => s.explosions = !s.explosions,
             Key::Liquids => s.liquids = !s.liquids,
@@ -5826,6 +5931,9 @@ impl Key {
             Key::SwayVines => s.sway_vines = d.sway_vines,
             Key::SwayWater => s.sway_water = d.sway_water,
             Key::SwayStrength => s.sway_strength = d.sway_strength,
+            Key::PlantPush => s.plant_push = d.plant_push,
+            Key::WaveSpeed => s.wave_speed = d.wave_speed,
+            Key::Punch => s.punch = d.punch,
             Key::Projectiles => s.projectiles = d.projectiles,
             Key::Explosions => s.explosions = d.explosions,
             Key::Liquids => s.liquids = d.liquids,
@@ -5860,10 +5968,10 @@ pub fn page_rows(cat: usize) -> Vec<Row> {
     use Row::{Header, Keys, Note};
     match cat {
         0 => vec![Keys(vec![MaxObjects, McBreak]), Keys(vec![SimSpeed]), Keys(vec![Items]), Keys(vec![ItemSpin]), Keys(vec![Pvp]), Keys(vec![ItemBreak]), Keys(vec![Crack, Sprint]), Keys(vec![Eat, BlockParticles]), Keys(vec![ParticleLife, ParticleVar])],
-        1 => vec![Keys(vec![Deaths, MobLife]), Keys(vec![MobVar, Anim]), Keys(vec![JointForce]), Keys(vec![JointBlood]), Keys(vec![RagdollLimit])],
+        1 => vec![Keys(vec![Deaths, MobLife]), Keys(vec![MobVar, Anim]), Keys(vec![JointForce]), Keys(vec![JointBlood]), Keys(vec![RagdollLimit]), Keys(vec![Punch])],
         2 => vec![Keys(vec![BlockPhysics, Activation]), Keys(vec![BlockLife, ObjScale]), Keys(vec![BlockVar, Anim])],
-        3 => vec![Keys(vec![Waves, Boats]), Keys(vec![WaveHeight]), Keys(vec![Foam]), Note("Waves need a Horizon shader pack or the mod's own look.")],
-        4 => vec![Keys(vec![SwayLeaves, Plants]), Keys(vec![SwayVines]), Keys(vec![SwayWater]), Keys(vec![SwayStrength]), Note("The wind's strength per weather is on the Weather page.")],
+        3 => vec![Keys(vec![Waves, Boats]), Keys(vec![WaveHeight]), Keys(vec![WaveSpeed]), Keys(vec![Foam]), Note("Waves need a Horizon shader pack or the mod's own look.")],
+        4 => vec![Keys(vec![SwayLeaves, Plants]), Keys(vec![SwayVines]), Keys(vec![SwayWater]), Keys(vec![SwayStrength]), Keys(vec![PlantPush]), Note("The wind's strength per weather is on the Weather page.")],
         5 => vec![Keys(vec![CapeOn, CapeRange]), Keys(vec![HideCape]), Note("Only capes are cloth. Leads and fishing lines are ropes:"), Keys(vec![Ropes])],
         6 => vec![Keys(vec![Projectiles]), Keys(vec![Explosions])],
         7 => vec![Keys(vec![Liquids]), Keys(vec![LiquidAmount]), Keys(vec![Splashes])],

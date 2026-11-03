@@ -287,6 +287,7 @@ pub mod game {
         pub velocity: crate::geometry::Vec3,
         pub ground: GroundState,
         pub yaw: f32,
+        pub pitch: f32,
         pub spectator: bool,
         pub flying: bool,
     }
@@ -362,6 +363,12 @@ pub mod game {
     impl Game<'_> {
         fn particle_sprite(&self, state: BlockStateId, pos: [i32; 3]) -> Option<(String, u32)> { None }
         fn particle_shape(&self, pos: [i32; 3], state: BlockStateId) -> Vec<[f64; 6]> { Vec::new() }
+        fn eye_position(&self) -> Option<[f64; 3]> { None }
+        fn attack(&mut self) -> bool {
+            //ATTACK//
+            __h_attack(&*self);
+            false
+        }
         fn break_block(&mut self, pos: [i32; 3]) -> Result<()> {
             //COLLAPSE//
             match __h_collapse(&mut *self, pos) {

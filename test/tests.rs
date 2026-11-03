@@ -1616,3 +1616,20 @@ fn page_notes_take_one_line() {
         }
     }
 }
+
+#[test]
+fn a_hit_knocks_a_piece_away() {
+    let w = Flat { pillar: None, water_above: false };
+    let mut p = Physics::default();
+    let (c, h, verts) = box_mesh([0.0, 0.0, 0.0, 0.5, 0.5, 0.5], [0.0, 0.0, 1.0, 1.0], 0xFFFF_FFFF);
+    p.add(vec![Body::new(v3(0.0, 64.0, 2.0) + c, Quat::IDENTITY, h, verts)], Vec::new(), 30.0, None);
+    run(&mut p, &w, 2.0);
+    let before = p.bodies[0].x;
+    // Looking the other way: nothing.
+    assert!(!p.punch(v3(0.25, 64.6, 0.0), v3(0.0, 0.0, -1.0), 3.0, 6.0));
+    // Looking at it (down a little): it flies off, away from the player.
+    let dir = (v3(0.25, 64.25, 2.25) - v3(0.25, 65.0, 0.0)).norm();
+    assert!(p.punch(v3(0.25, 65.0, 0.0), dir, 3.0, 6.0));
+    run(&mut p, &w, 1.0);
+    assert!(p.bodies[0].x.z > before.z + 1.0, "{:?} -> {:?}", before, p.bodies[0].x);
+}

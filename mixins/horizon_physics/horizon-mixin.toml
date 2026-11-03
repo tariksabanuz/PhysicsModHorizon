@@ -1,6 +1,6 @@
 [mod]
 id = "horizon_physics"
-version = "0.12.1"
+version = "0.13.0"
 priority = 100
 
 [compatibility]
@@ -53,6 +53,14 @@ bindings = [
   { name = "mod_id", ty = "&str", value = "mod_id" },
   { name = "button", ty = "usize", value = "button" },
 ]
+
+# Player.attack: a ragdoll or piece in front of the player is knocked away by the hit.
+[[injection]]
+id = "attack"
+kind = "HEAD"
+target = "horizon_client::game::Game<'_>::attack"
+helper = "attack.rs"
+bindings = [{ name = "game", ty = "&crate::game::Game<'_>", value = "&*self" }]
 
 # ServerPlayerGameMode.destroyBlock, then what the broken block held up falls (trees, bridges).
 [[injection]]

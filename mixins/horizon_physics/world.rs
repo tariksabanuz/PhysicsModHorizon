@@ -175,7 +175,15 @@ fn horizon_physics_world(game: &crate::game::Game<'_>, camera: glam::DVec3, out:
                     continue;
                 }
                 match game.precipitation(bx, y, bz) {
-                    Some(false) => hp::rain_splash([x, f64::from(y), z]),
+                    Some(false) => {
+                        // On water: a ring on the surface; elsewhere: drops thrown up.
+                        let below = game.world.block(bx, y - 1, bz);
+                        if facts.get(below).fluid == horizon_client::blocks::Fluid::Water {
+                            hp::rain_ripple([x, f64::from(y) - 0.11, z]);
+                        } else {
+                            hp::rain_splash([x, f64::from(y), z]);
+                        }
+                    }
                     // Snow: a flake starts above, a little at a time (they live long).
                     Some(true) if next() < 0.35 => {
                         let top = (camera.y + 4.0 + next() * 8.0).max(f64::from(y) + 1.0);

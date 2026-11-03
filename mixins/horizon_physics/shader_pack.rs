@@ -15,6 +15,8 @@ fn horizon_physics_shader_pack(game: &mut crate::game::Game<'_>) {
         wave_height: (st.wave_height * 20.0).round() / 20.0,
         sway: (st.sway_strength * 20.0).round() / 20.0,
         foam: st.foam,
+        push: st.plant_push,
+        wave_speed: (st.wave_speed * 20.0).round() / 20.0,
     });
     let render = game.pack.render.clone();
     let key = std::sync::Arc::as_ptr(&render) as usize;
