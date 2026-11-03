@@ -3,15 +3,23 @@
 A native mod for [Horizon](https://github.com/horizon-rust/horizon) (Minecraft Java 26.3 in Rust) that
 brings PhysicsMod-style physics to the client, written from scratch:
 
+- **Quick setup**: the first time the game starts with the mod, the title screen shows a quick setup:
+  a page each for mobs, blocks, weather and collapsing structures, each choice a live preview of
+  itself (a pig dying, a stone block breaking, rain on a pond, a cliff coming down) made by the
+  mod's own solver. Pick one (or Off) per page, or Skip Setup. It can be run again from the mod's
+  settings.
 - **Crumbling blocks**: a broken block falls apart into pieces of its own texture that tumble, bounce,
-  pile up and fade after a while.
+  pile up and fade after a while, in one of four styles: blocky (whole), particles (small cubes),
+  crumbled voxel (lumps) or fractured (shards).
 - **Collapsing**: what a broken block held up and that no longer reaches the ground falls: cut a
   tree's trunk and it tips over away from you, whole logs tumbling down with its leaves; take a
   bridge's pillar and the bridge comes down. The blocks leave the world as if broken (their drops
   fall, in survival). Only blocks the player breaks, in a world played on this computer.
 - **Mob ragdolls**: a mob that dies drops as a ragdoll: its model parts (head, body, arms, legs) stay
   joined where they meet and fall limply.
-- **Mobs falling apart**: or the parts come loose and tumble separately (or a mix of both).
+- **Mobs falling apart**: or the parts come loose and tumble separately (blocky), or break up into
+  pieces of their own skin (fractured).
+- **Weather**: rain splashes up off the ground where it lands.
 - **Shoving**: walk into a ragdoll or a pile of pieces and you push them along; they tumble away.
 - **Item physics**: dropped items tumble while they fly and lie flat on the ground instead of floating
   and spinning.

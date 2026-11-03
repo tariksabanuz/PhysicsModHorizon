@@ -5,7 +5,7 @@
 // falling tree come down with it. Only blocks the player breaks.
 fn horizon_physics_collapse(game: &mut crate::game::Game<'_>, pos: [i32; 3]) -> ::core::ops::ControlFlow<Result<()>> {
     use horizon_client::native_horizon_physics as hp;
-    if !game.native_window() || !game.native_on(hp::ID) || !hp::settings().blocks || hp::COLLAPSE.enter() {
+    if !game.native_window() || !game.native_on(hp::ID) || !hp::settings().collapse || hp::COLLAPSE.enter() {
         return ::core::ops::ControlFlow::Continue(());
     }
     let result = game.break_block(pos);

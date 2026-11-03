@@ -248,8 +248,8 @@ fn settings_round_trip_and_cycle() {
     s.click(10);
     let t = Settings::from_text(&s.to_text());
     assert_eq!(s, t);
-    assert_eq!(t.labels().len(), 16);
-    assert!(t.labels()[1].ends_with("Fall apart"));
+    assert_eq!(t.labels().len(), 20);
+    assert!(t.labels()[1].ends_with("Blocky"));
     assert!(t.labels()[4].ends_with("Off"));
     assert!(t.labels()[11].ends_with("Strong"));
     assert!(!t.smoke && t.explosions && !t.liquids && t.waves && t.plants);
@@ -1198,3 +1198,110 @@ fn a_cut_tree_falls_over_away_from_the_player() {
     assert_eq!(collapse_kind("minecraft:birch_log"), 3);
     assert!(is_log("minecraft:birch_log") && !is_log("minecraft:birch_planks"));
 }
+
+#[test]
+fn the_quick_setup_walks_through_its_pages() {
+    let (w, h) = (640.0, 345.0);
+    let mut s = Settings::default();
+    assert!(!s.setup);
+    // Mobs: the middle panel is Ragdoll.
+    assert_eq!(setup_hit(0, w, h, 320.0, 200.0), SetupHit::Pick(1));
+    setup_choose(&mut s, 0, Some(1));
+    assert_eq!(s.deaths, 1);
+    setup_choose(&mut s, 0, Some(2));
+    assert_eq!(s.deaths, 3, "fractured");
+    // Blocks: four panels; the second is Particles.
+    assert_eq!(setup_hit(1, w, h, 640.0 * 0.375, 200.0), SetupHit::Pick(1));
+    setup_choose(&mut s, 1, Some(1));
+    assert!(s.blocks && s.block_style == 1);
+    setup_choose(&mut s, 1, None);
+    assert!(!s.blocks);
+    // The buttons, the bars that pick nothing, the last page's Continue.
+    assert_eq!(setup_hit(2, w, h, 40.0, 25.0), SetupHit::Off);
+    assert_eq!(setup_hit(2, w, h, 600.0, 25.0), SetupHit::Skip);
+    assert_eq!(setup_hit(2, w, h, 320.0, 320.0), SetupHit::None);
+    assert_eq!(setup_hit(4, w, h, 320.0, 250.0), SetupHit::Continue);
+    // Saved and read back.
+    s.setup = true;
+    s.weather = false;
+    let back = Settings::from_text(&s.to_text());
+    assert_eq!(back, s);
+    // Hovering a panel lights it up and frames it.
+    let plain = setup_ui(0, w, h, (0.0, 0.0));
+    let hover = setup_ui(0, w, h, (320.0, 200.0));
+    let white = |ui: &[SetupUi]| ui.iter().filter(|u| matches!(u, SetupUi::Rect { color: [255, 255, 255, 255], w: 2.0, .. })).count();
+    assert_eq!(white(&plain), 0);
+    assert_eq!(white(&hover), 2);
+}
+
+#[test]
+fn the_previews_play_their_choice() {
+    for (scene, moving) in [(Scene::Mob(1), 7), (Scene::Mob(2), 7), (Scene::Mob(3), 10), (Scene::Block(0), 1), (Scene::Block(1), 40), (Scene::Block(2), 4), (Scene::Block(3), 4), (Scene::Collapse, 30)] {
+        let mut sc = SetupScene::new(scene, 5);
+        for _ in 0..150 {
+            sc.step(1.0 / 60.0);
+        }
+        let quads = sc.quads(320.0, 172.0, 213.0, 345.0);
+        assert!(quads.len() > 200, "{scene:?}: the grass and the pieces");
+        let _ = moving;
+    }
+    let mut rain = SetupScene::new(Scene::Weather, 1);
+    for _ in 0..90 {
+        rain.step(1.0 / 60.0);
+    }
+    assert!(rain.quads(320.0, 172.0, 640.0, 345.0).iter().filter(|q| q.color[3] < 1.0).count() > 50, "rain and spray");
+}
+
+#[test]
+#[ignore]
+fn dump_setup_screens() {
+    use std::fmt::Write as _;
+    let (w, h) = (640.0f32, 345.0f32);
+    let shots: [(usize, (f32, f32), f64, &str); 14] = [
+        (0, (5.0, 340.0), 2.4, "mobs"),
+        (0, (100.0, 200.0), 2.4, "mobs_left"),
+        (0, (320.0, 200.0), 2.4, "mobs_middle"),
+        (0, (540.0, 200.0), 2.4, "mobs_right"),
+        (0, (600.0, 28.0), 2.4, "mobs_skip"),
+        (0, (60.0, 28.0), 2.4, "mobs_off"),
+        (1, (5.0, 340.0), 2.0, "blocks"),
+        (1, (240.0, 200.0), 2.0, "blocks_particles"),
+        (2, (5.0, 340.0), 1.5, "weather"),
+        (2, (320.0, 200.0), 1.5, "weather_hover"),
+        (3, (5.0, 340.0), 2.6, "collapse"),
+        (3, (320.0, 200.0), 1.9, "collapse_hover"),
+        (4, (5.0, 340.0), 0.0, "done"),
+        (4, (320.0, 250.0), 0.0, "done_hover"),
+    ];
+    let mut out = String::new();
+    for (page, cursor, t, name) in shots {
+        let _ = writeln!(out, "SHOT {name}");
+        let scenes: Vec<SetupScene> = setup_page(page).1.iter().enumerate().map(|(i, c)| {
+            let mut sc = SetupScene::new(c.1, 17 + i as u64 * 31);
+            for _ in 0..(t * 60.0) as usize {
+                sc.step(1.0 / 60.0);
+            }
+            sc
+        }).collect();
+        for item in setup_ui(page, w, h, cursor) {
+            match item {
+                SetupUi::Rect { x, y, w, h, color } => { let _ = writeln!(out, "R {x} {y} {w} {h} {} {} {} {}", color[0], color[1], color[2], color[3]); }
+                SetupUi::Gradient { x, y, w, h, top, bottom } => { let _ = writeln!(out, "G {x} {y} {w} {h} {} {} {} {} {} {}", top[0], top[1], top[2], bottom[0], bottom[1], bottom[2]); }
+                SetupUi::Text { text, x, y, color } => { let _ = writeln!(out, "T {x} {y} {} {} {} {text}", color[0], color[1], color[2]); }
+                SetupUi::Scene { index, x, y, w: sw, h: sh } => {
+                    let _ = writeln!(out, "C {x} {y} {sw} {sh}");
+                    for q in scenes[index].quads(x + sw * 0.5, y + sh * 0.5, sw, sh) {
+                        let mut line = format!("Q {} {} {} {} {}", q.sprite, q.color[0], q.color[1], q.color[2], q.color[3]);
+                        for k in 0..4 {
+                            let _ = write!(line, " {} {} {} {} {}", q.p[k][0], q.p[k][1], q.p[k][2], q.uv[k][0], q.uv[k][1]);
+                        }
+                        let _ = writeln!(out, "{line}");
+                    }
+                    let _ = writeln!(out, "E");
+                }
+            }
+        }
+    }
+    std::fs::write("/tmp/setup_dump.txt", out).unwrap();
+}
+

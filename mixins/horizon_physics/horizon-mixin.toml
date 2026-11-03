@@ -1,6 +1,6 @@
 [mod]
 id = "horizon_physics"
-version = "0.9.0"
+version = "0.10.0"
 priority = 100
 
 [compatibility]
@@ -13,6 +13,14 @@ id = "runtime"
 file = "crates/horizon-client/src/lib.rs"
 name = "native_horizon_physics"
 source = "runtime.rs"
+visibility = "pub"
+
+# The quick setup on the title screen: drawing it (the previews and the HUD).
+[[module]]
+id = "setup"
+file = "crates/horizon-client/src/lib.rs"
+name = "native_horizon_physics_setup"
+source = "setup.rs"
 visibility = "pub"
 
 # Options > Mods: the row and its settings page.
@@ -271,3 +279,43 @@ kind = "HEAD"
 target = "horizon_client::game::native_shaders::Game<'_>::tick_native_shader_pack"
 helper = "shader_pack.rs"
 bindings = [{ name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" }]
+
+# The quick setup: the settings read as the game starts, then the title screen's place and its
+# presses while it has not been done. Before other mods' title hooks (higher priority runs first),
+# so nothing is drawn over it.
+[[injection]]
+id = "setup-load"
+hook = "frame"
+hook_version = 1
+kind = "HEAD"
+helper = "setup_load.rs"
+bindings = [{ name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" }]
+
+[[injection]]
+id = "setup-draw"
+kind = "HEAD"
+cancellable = true
+priority = 200
+target = "horizon_client::title::Title::draw"
+helper = "setup_draw.rs"
+bindings = [
+  { name = "_title", ty = "&Title", value = "self" },
+  { name = "atlas", ty = "&HudAtlas", value = "atlas" },
+  { name = "batch", ty = "&mut HudBatch", value = "&mut *batch" },
+  { name = "cursor", ty = "(f32, f32)", value = "cursor" },
+  { name = "_hide_splash", ty = "bool", value = "hide_splash" },
+]
+
+[[injection]]
+id = "setup-click"
+kind = "HEAD"
+cancellable = true
+priority = 200
+target = "horizon_client::title::Title::click"
+helper = "setup_click.rs"
+bindings = [
+  { name = "_title", ty = "&mut Title", value = "&mut *self" },
+  { name = "x", ty = "f32", value = "x" },
+  { name = "y", ty = "f32", value = "y" },
+  { name = "size", ty = "(f32, f32)", value = "size" },
+]

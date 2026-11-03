@@ -19,7 +19,7 @@ use crate::mesher::Vertex;
 
 pub const ID: &str = "horizon_physics";
 pub const NAME: &str = "Horizon Physics";
-pub const VERSION: &str = "0.9.0";
+pub const VERSION: &str = "0.10.0";
 pub const DESCRIPTION: &str =
     "By tariksabanuz. Blocks crumble and blow apart, ragdolls, items, smoke, ropes, capes, liquids, waves and swaying plants.";
 
@@ -30,7 +30,7 @@ pub const DESCRIPTION: &str =
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub blocks: bool,
-    /// 0 off, 1 ragdoll, 2 fall apart, 3 mixed.
+    /// 0 off, 1 ragdoll, 2 blocky (the parts come loose), 3 fractured (the parts break up).
     pub deaths: u8,
     pub items: bool,
     /// Blocks blown apart, fireballs, sparks and smoke.
@@ -57,6 +57,15 @@ pub struct Settings {
     pub pieces: u8,
     /// 0 10 s, 1 30 s, 2 60 s, 3 5 min.
     pub lifetime: u8,
+    /// How a broken block comes apart: 0 blocky (whole), 1 particles, 2 crumbled voxel, 3
+    /// fractured.
+    pub block_style: u8,
+    /// Rain splashes on the ground.
+    pub weather: bool,
+    /// What a broken block held up falls.
+    pub collapse: bool,
+    /// The quick setup was done (or skipped).
+    pub setup: bool,
 }
 
 impl Default for Settings {
@@ -77,11 +86,16 @@ impl Default for Settings {
             gravity: 0,
             pieces: 1,
             lifetime: 1,
+            block_style: 2,
+            weather: true,
+            collapse: true,
+            setup: false,
         }
     }
 }
 
-const DEATHS: [&str; 4] = ["Off", "Ragdoll", "Fall apart", "Mixed"];
+const DEATHS: [&str; 4] = ["Off", "Ragdoll", "Blocky", "Fractured"];
+pub const BLOCK_STYLES: [&str; 4] = ["Blocky", "Particles", "Crumbled voxel", "Fractured"];
 const GRAVITY: [(&str, f64); 5] =
     [("Earth", 1.0), ("Moon", 0.165), ("Mars", 0.38), ("Pluto", 0.063), ("Zero", 0.0)];
 const PIECES: [(&str, usize); 3] = [("Few", 4), ("Normal", 8), ("Many", 16)];
@@ -114,6 +128,10 @@ impl Settings {
             format!("Pieces per block: {}", PIECES[self.pieces as usize % 3].0),
             format!("Pieces stay for: {}", LIFETIME[self.lifetime as usize % 4].0),
             "Clear all pieces".to_string(),
+            format!("Block pieces: {}", BLOCK_STYLES[self.block_style as usize % 4]),
+            format!("Collapsing structures: {}", on_off(self.collapse)),
+            format!("Weather particles: {}", on_off(self.weather)),
+            "Run the quick setup again".to_string(),
         ]
     }
 
@@ -136,6 +154,10 @@ impl Settings {
             13 => self.pieces = (self.pieces + 1) % 3,
             14 => self.lifetime = (self.lifetime + 1) % 4,
             15 => return true,
+            16 => self.block_style = (self.block_style + 1) % 4,
+            17 => self.collapse = !self.collapse,
+            18 => self.weather = !self.weather,
+            19 => self.setup = false,
             _ => {}
         }
         false
@@ -143,7 +165,7 @@ impl Settings {
 
     pub fn to_text(&self) -> String {
         format!(
-            "blocks={}\ndeaths={}\nitems={}\nexplosions={}\nsmoke={}\nsnow={}\nropes={}\ncapes={}\nwaves={}\nplants={}\nliquids={}\nwind={}\ngravity={}\npieces={}\nlifetime={}\n",
+            "blocks={}\ndeaths={}\nitems={}\nexplosions={}\nsmoke={}\nsnow={}\nropes={}\ncapes={}\nwaves={}\nplants={}\nliquids={}\nwind={}\ngravity={}\npieces={}\nlifetime={}\nblock_style={}\nweather={}\ncollapse={}\nsetup={}\n",
             self.blocks as u8,
             self.deaths,
             self.items as u8,
@@ -158,7 +180,11 @@ impl Settings {
             self.wind,
             self.gravity,
             self.pieces,
-            self.lifetime
+            self.lifetime,
+            self.block_style,
+            self.weather as u8,
+            self.collapse as u8,
+            self.setup as u8
         )
     }
 
@@ -183,6 +209,10 @@ impl Settings {
                 "gravity" => s.gravity = n % 5,
                 "pieces" => s.pieces = n % 3,
                 "lifetime" => s.lifetime = n % 4,
+                "block_style" => s.block_style = n % 4,
+                "weather" => s.weather = n != 0,
+                "collapse" => s.collapse = n != 0,
+                "setup" => s.setup = n != 0,
                 _ => {}
             }
         }
@@ -266,6 +296,19 @@ pub fn setting_click(i: usize) {
     };
     if clear_all {
         clear();
+    }
+}
+
+/// Changes the settings and saves them (the quick setup's choices).
+pub fn update_settings(f: impl FnOnce(&mut Settings)) {
+    let mut g = SETTINGS.lock().unwrap_or_else(|e| e.into_inner());
+    let entry = g.get_or_insert_with(|| (Settings::default(), None));
+    f(&mut entry.0);
+    if let Some(p) = &entry.1 {
+        if let Some(parent) = p.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(p, entry.0.to_text());
     }
 }
 
@@ -1228,6 +1271,74 @@ fn box_mesh(b: [f64; 6], uv: [f32; 4], color: u32) -> (V3, V3, Vec<MeshVertex>) 
     (c, h, verts)
 }
 
+/// How a broken block's box `b` (block space, `share` of the block's volume) comes apart in
+/// `style` (`Settings::block_style`), `want` pieces for a whole block: each piece's box, its turn
+/// and its velocity and spin. The game and the quick setup's previews both use it.
+pub fn block_pieces(style: u8, b: [f64; 6], share: f64, want: usize, rng: &mut Rng) -> Vec<([f64; 6], Quat, V3, V3)> {
+    let mid = v3((b[0] + b[3]) * 0.5, (b[1] + b[4]) * 0.5, (b[2] + b[5]) * 0.5);
+    let mut out = Vec::new();
+    match style % 4 {
+        // Blocky: the block pops out whole and tumbles.
+        0 => {
+            let v = v3(rng.range(-0.4, 0.4), rng.range(1.6, 2.6), rng.range(-0.4, 0.4));
+            out.push((b, Quat::IDENTITY, v, rng.unit() * rng.range(1.0, 3.0)));
+        }
+        // Particles: a cloud of small cubes, a quarter of a block each, thrown about.
+        1 => {
+            let n = ((4.0 * share.cbrt()).round() as usize).clamp(1, 4);
+            let size = [(b[3] - b[0]) / n as f64, (b[4] - b[1]) / n as f64, (b[5] - b[2]) / n as f64];
+            for i in 0..n {
+                for j in 0..n {
+                    for k in 0..n {
+                        let lo = [b[0] + size[0] * i as f64, b[1] + size[1] * j as f64, b[2] + size[2] * k as f64];
+                        // A little smaller than its cell, so they read as bits.
+                        let s = 0.18;
+                        let c = [lo[0] + size[0] * 0.5, lo[1] + size[1] * 0.5, lo[2] + size[2] * 0.5];
+                        let piece = [
+                            c[0] - size[0] * (0.5 - s), c[1] - size[1] * (0.5 - s), c[2] - size[2] * (0.5 - s),
+                            c[0] + size[0] * (0.5 - s), c[1] + size[1] * (0.5 - s), c[2] + size[2] * (0.5 - s),
+                        ];
+                        let out_dir = (v3(c[0], c[1], c[2]) - mid).norm();
+                        let r = rng.unit();
+                        let v = v3(out_dir.x * 2.2 + r.x * 1.2, rng.range(1.0, 3.2), out_dir.z * 2.2 + r.z * 1.2);
+                        out.push((piece, Quat::IDENTITY, v, rng.unit() * rng.range(2.0, 9.0)));
+                    }
+                }
+            }
+        }
+        // Crumbled voxel: blocky lumps of the block's own pixels.
+        2 => {
+            let n = ((want as f64 * share).round() as usize).max(1);
+            for piece in split_box(b, n, rng) {
+                let c = v3((piece[0] + piece[3]) * 0.5, (piece[1] + piece[4]) * 0.5, (piece[2] + piece[5]) * 0.5);
+                let out_dir = (c - mid).norm();
+                let r = rng.unit();
+                let v = v3(out_dir.x * 0.6 + r.x * 0.4, rng.range(0.3, 1.6), out_dir.z * 0.6 + r.z * 0.4);
+                out.push((piece, Quat::IDENTITY, v, rng.unit() * rng.range(0.5, 4.0)));
+            }
+        }
+        // Fractured: shards, cut every which way, turned as they break off.
+        _ => {
+            let n = ((want as f64 * share * 1.5).round() as usize).max(2);
+            for piece in split_box(b, n, rng) {
+                let c = v3((piece[0] + piece[3]) * 0.5, (piece[1] + piece[4]) * 0.5, (piece[2] + piece[5]) * 0.5);
+                // Thinner along one side: a shard rather than a lump.
+                let mut p = piece;
+                let k = (rng.next() * 3.0) as usize % 3;
+                let shrink = (p[k + 3] - p[k]) * rng.range(0.15, 0.35);
+                p[k] += shrink * 0.5;
+                p[k + 3] -= shrink * 0.5;
+                let q = Quat::axis_angle(rng.unit(), rng.range(0.2, 0.7));
+                let out_dir = (c - mid).norm();
+                let r = rng.unit();
+                let v = v3(out_dir.x * 1.1 + r.x * 0.5, rng.range(0.5, 2.0), out_dir.z * 1.1 + r.z * 0.5);
+                out.push((p, q, v, rng.unit() * rng.range(1.0, 6.0)));
+            }
+        }
+    }
+    out
+}
+
 /// RGB tint (0xRRGGBB) as an entity vertex colour (ABGR bytes).
 pub fn tint_color(tint: u32) -> u32 {
     let (r, g, b) = ((tint >> 16) & 255, (tint >> 8) & 255, tint & 255);
@@ -1243,19 +1354,14 @@ impl Physics {
         }
         let o = v3(f64::from(pos[0]), f64::from(pos[1]), f64::from(pos[2]));
         let color = tint_color(tint);
-        let want = s.pieces_per_block();
         let mut bodies = Vec::new();
         for b in boxes {
             let vol = (b[3] - b[0]) * (b[4] - b[1]) * (b[5] - b[2]);
-            let n = ((want as f64 * vol / total).round() as usize).max(1);
-            for piece in split_box(*b, n, self.rng()) {
+            for (piece, q, v, w) in block_pieces(s.block_style, *b, vol / total, s.pieces_per_block(), self.rng()) {
                 let (c, h, verts) = box_mesh(piece, uv, color);
-                let mut body = Body::new(o + c, Quat::IDENTITY, h, verts);
-                // A gentle burst: outward from the middle of the block and a little up.
-                let out = (c - v3(0.5, 0.5, 0.5)).norm();
-                let r = self.rng().unit();
-                body.v = v3(out.x * 0.6 + r.x * 0.4, self.rng.range(0.3, 1.6), out.z * 0.6 + r.z * 0.4);
-                body.w = self.rng.unit() * self.rng.range(0.5, 4.0);
+                let mut body = Body::new(o + c, q, h, verts);
+                body.v = v;
+                body.w = w;
                 bodies.push(body);
             }
         }
@@ -1571,18 +1677,40 @@ impl Physics {
         if segs.is_empty() {
             return;
         }
-        let mode = if mode == 3 {
-            if self.rng.next() < 0.35 { 2 } else { 1 }
-        } else {
-            mode
-        };
         let mut bodies: Vec<Body> = segs.iter().map(|s| part_body(s, camera)).collect();
+        // Fractured: each part breaks up into pieces of its own skin.
+        if mode == 3 {
+            let mut pieces = Vec::new();
+            for b in &bodies {
+                let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+                for v in &b.verts {
+                    for k in 0..2 {
+                        lo[k] = lo[k].min(v.uv[k]);
+                        hi[k] = hi[k].max(v.uv[k]);
+                    }
+                }
+                let (layer, color) = b.verts.first().map_or((0, u32::MAX), |v| (v.layer, v.color));
+                let size = b.half * 2.0;
+                let n = ((size.x * size.y * size.z * 90.0).round() as usize).clamp(2, 7);
+                for unit in split_box([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], n, &mut self.rng) {
+                    let (c, h, mut verts) = box_mesh(unit, [lo[0], lo[1], hi[0], hi[1]], color);
+                    for v in &mut verts {
+                        v.layer = layer;
+                        v.pos = [v.pos[0] * size.x as f32, v.pos[1] * size.y as f32, v.pos[2] * size.z as f32];
+                    }
+                    let local = v3((c.x - 0.5) * size.x, (c.y - 0.5) * size.y, (c.z - 0.5) * size.z);
+                    let half = v3(h.x * size.x, h.y * size.y, h.z * size.z);
+                    pieces.push(Body::new(b.x + b.q.rotate(local), b.q, half, verts));
+                }
+            }
+            bodies = pieces;
+        }
         let mid = bodies.iter().fold(V3::default(), |a, b| a + b.x) * (1.0 / bodies.len() as f64);
         // Knocked away from the camera (the player that landed the blow, mostly).
         let away = v3(mid.x - camera.x, 0.0, mid.z - camera.z).norm();
         let base = velocity * 0.5 + away * 1.2 + v3(0.0, 1.2, 0.0);
         let mut joint_list = Vec::new();
-        if mode == 2 {
+        if mode == 2 || mode == 3 {
             for b in &mut bodies {
                 let out = (b.x - mid).norm();
                 let r = self.rng.unit();
@@ -1653,6 +1781,27 @@ pub fn piece_count() -> usize {
     with(|s| s.physics.len())
 }
 
+/// Rain landing on the ground at `at`: a few drops thrown up.
+pub fn rain_splash(at: [f64; 3]) {
+    if !ENABLED.load(Ordering::Relaxed) || !settings().weather {
+        return;
+    }
+    with(|s| {
+        let x = v3(at[0], at[1] + 0.02, at[2]);
+        for _ in 0..3 {
+            let rng = &mut s.env.rng;
+            let r = rng.unit();
+            let v = v3(r.x * 0.8, rng.range(1.0, 2.2), r.z * 0.8);
+            let puff = Puff::new(FxKind::Dust, x, v, rng.range(0.012, 0.022), rng.range(0.22, 0.34), [0.62, 0.72, 0.95], [0.75, 0.82, 0.97], rng);
+            s.env.puff(puff);
+        }
+    });
+}
+
+pub fn weather_on() -> bool {
+    ENABLED.load(Ordering::Relaxed) && settings().weather
+}
+
 /// Called by the block-breaking hook.
 pub fn spawn_block(pos: [i32; 3], boxes: &[[f64; 6]], uv: [f32; 4], tint: u32) {
     let st = settings();
@@ -1691,7 +1840,7 @@ pub fn take_silenced(pos: [i32; 3]) -> bool {
 /// from `push` (a horizontal direction).
 pub fn collapse(blocks: &[Falling], foot: [i32; 3], push: [f64; 2]) {
     let st = settings();
-    if !st.blocks || blocks.is_empty() {
+    if !st.collapse || blocks.is_empty() {
         return;
     }
     let len = (push[0] * push[0] + push[1] * push[1]).sqrt();
@@ -3519,3 +3668,784 @@ pub fn player_water(feet: [f64; 3], in_water: bool, down: f64) {
     }
     with(|s| s.env.player_in_water(v3(feet[0], feet[1], feet[2]), in_water, down));
 }
+
+// ---------------------------------------------------------------------------------------------
+// Quick setup: the live previews on its pages
+// ---------------------------------------------------------------------------------------------
+//
+// Each panel of the quick setup shows its choice happening, with this module's own solver: a pig
+// that dies (falling apart, as a ragdoll, in pieces), a stone block that breaks (whole, as small
+// bits, as lumps, as shards), rain splashing on a pond, a pillar collapsing. A scene steps on its
+// own clock and starts over every few seconds; `setup_quads` sees it through a camera of its own
+// and hands back the quads to draw (screen position, depth, sprite and its part, colour).
+
+/// What a preview shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scene {
+    /// Mob deaths (`Settings::deaths`: 1 ragdoll, 2 blocky, 3 fractured).
+    Mob(u8),
+    /// A broken block (`Settings::block_style`).
+    Block(u8),
+    Weather,
+    Collapse,
+}
+
+/// The sprites a preview draws with; the screen finds them in the HUD atlas.
+pub const SETUP_SPRITES: [&str; 6] = ["", "block/grass_block_top", "block/stone", "block/dirt", "block/oak_log", "block/water_still"];
+const SP_FLAT: u8 = 0;
+const SP_GRASS: u8 = 1;
+const SP_STONE: u8 = 2;
+const SP_DIRT: u8 = 3;
+const SP_LOG: u8 = 4;
+const SP_WATER: u8 = 5;
+
+/// One quad to draw: its corners on the screen (x, y in GUI pixels, and depth: larger is nearer),
+/// the sprite (`SETUP_SPRITES`, 0 a plain colour) and where in it each corner is (0..1), and its
+/// colour (rgba, 0..1).
+#[derive(Clone, Copy, Debug)]
+pub struct SetupQuad {
+    pub p: [[f32; 3]; 4],
+    pub sprite: u8,
+    pub uv: [[f32; 2]; 4],
+    pub color: [f32; 4],
+}
+
+/// What each body of a scene looks like: its sprite, its box in block space (for which part of
+/// the sprite each face shows), and its colour.
+#[derive(Clone, Copy, Debug)]
+struct Look {
+    sprite: u8,
+    tex: [f64; 6],
+    rgb: [f64; 3],
+}
+
+pub struct SetupScene {
+    pub scene: Scene,
+    physics: Physics,
+    looks: Vec<Look>,
+    /// Seconds since it started.
+    pub t: f64,
+    broken: bool,
+    rng: Rng,
+    /// Rain: falling drops, and the spray of the ones that landed (position, velocity, age).
+    rain: Vec<(V3, V3)>,
+    spray: Vec<(V3, V3, f64)>,
+}
+
+/// The ground of a preview: grass at y 0 (and the pond's floor a block down).
+struct SetupGround;
+
+impl World for SetupGround {
+    fn cell(&self, _: i32, y: i32, _: i32) -> Cell {
+        if y < 0 { Cell::Full } else { Cell::Air }
+    }
+    fn light(&self, _: i32, _: i32, _: i32) -> u32 {
+        15 * 16
+    }
+}
+
+const PIG_PINK: [f64; 3] = [0.95, 0.66, 0.64];
+/// A standing pig, as boxes (centre, half size) in block space, its feet at y 0, facing +x.
+fn pig_parts() -> Vec<(V3, V3, [f64; 3])> {
+    let p = 1.0 / 16.0;
+    let snout = [0.93, 0.55, 0.55];
+    vec![
+        (v3(0.0, 9.0 * p, 0.0), v3(8.0 * p, 4.0 * p, 5.0 * p), PIG_PINK),
+        (v3(10.0 * p, 12.0 * p, 0.0), v3(4.0 * p, 4.0 * p, 4.0 * p), PIG_PINK),
+        (v3(14.5 * p, 10.5 * p, 0.0), v3(0.5 * p, 1.5 * p, 2.0 * p), snout),
+        (v3(5.0 * p, 3.0 * p, 3.0 * p), v3(2.0 * p, 3.0 * p, 2.0 * p), PIG_PINK),
+        (v3(5.0 * p, 3.0 * p, -3.0 * p), v3(2.0 * p, 3.0 * p, 2.0 * p), PIG_PINK),
+        (v3(-5.0 * p, 3.0 * p, 3.0 * p), v3(2.0 * p, 3.0 * p, 2.0 * p), PIG_PINK),
+        (v3(-5.0 * p, 3.0 * p, -3.0 * p), v3(2.0 * p, 3.0 * p, 2.0 * p), PIG_PINK),
+    ]
+}
+
+/// The part of the cliff that collapses: blocks (position, sprite), stone under dirt.
+fn pillar() -> Vec<([i32; 3], u8)> {
+    let mut out = Vec::new();
+    for y in 0..9 {
+        for x in 0..3 {
+            for z in 0..2 {
+                out.push(([x, y, z], if y >= 7 { SP_DIRT } else { SP_STONE }));
+            }
+        }
+    }
+    out
+}
+
+/// The trees around the pond in the weather preview: trunk blocks and leaf blocks.
+fn weather_trees() -> Vec<(V3, V3, u8, [f64; 3])> {
+    let mut out = Vec::new();
+    for (tx, tz, h) in [(-4.5, 7.5, 5), (3.5, 9.0, 6), (-8.0, 12.0, 5), (6.5, 5.5, 4), (0.5, 14.0, 6)] {
+        for y in 0..h {
+            out.push((v3(tx, f64::from(y) + 0.5, tz), v3(0.5, 0.5, 0.5), SP_LOG, [1.0, 1.0, 1.0]));
+        }
+        let top = f64::from(h);
+        out.push((v3(tx, top + 0.2, tz), v3(1.8, 0.9, 1.8), SP_FLAT, [0.16, 0.34, 0.14]));
+        out.push((v3(tx, top + 1.2, tz), v3(1.1, 0.6, 1.1), SP_FLAT, [0.18, 0.38, 0.16]));
+    }
+    out
+}
+
+impl SetupScene {
+    pub fn new(scene: Scene, seed: u64) -> SetupScene {
+        SetupScene {
+            scene,
+            physics: Physics::default(),
+            looks: Vec::new(),
+            t: 0.0,
+            broken: false,
+            rng: Rng::new(seed),
+            rain: Vec::new(),
+            spray: Vec::new(),
+        }
+    }
+
+    /// How long a scene runs before it starts over.
+    fn length(&self) -> f64 {
+        match self.scene {
+            Scene::Weather => f64::INFINITY,
+            Scene::Collapse => 7.0,
+            _ => 5.0,
+        }
+    }
+
+    /// When the thing breaks (dies, collapses).
+    fn moment(&self) -> f64 {
+        match self.scene {
+            Scene::Collapse => 1.2,
+            _ => 0.8,
+        }
+    }
+
+    fn add(&mut self, bodies: Vec<Body>, looks: Vec<Look>, joints: Vec<Joint>) {
+        self.looks.extend(looks);
+        self.physics.add(bodies, joints, 1.0e6, None);
+    }
+
+    /// Breaks the thing: the bodies of the scene's choice, with the game's own pieces and pushes.
+    fn break_now(&mut self) {
+        self.broken = true;
+        match self.scene {
+            Scene::Mob(mode) => {
+                let parts = pig_parts();
+                let mut bodies = Vec::new();
+                let mut looks = Vec::new();
+                let mid = v3(0.0, 0.5, 0.0);
+                // Knocked away from the camera, a little up.
+                let base = v3(0.3, 1.4, 1.1);
+                for (c, h, rgb) in &parts {
+                    if mode == 3 {
+                        let size = *h * 2.0;
+                        let n = ((size.x * size.y * size.z * 90.0).round() as usize).clamp(2, 7);
+                        for unit in split_box([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], n, &mut self.rng) {
+                            let uc = v3((unit[0] + unit[3]) * 0.5, (unit[1] + unit[4]) * 0.5, (unit[2] + unit[5]) * 0.5);
+                            let local = v3((uc.x - 0.5) * size.x, (uc.y - 0.5) * size.y, (uc.z - 0.5) * size.z);
+                            let half = v3((unit[3] - unit[0]) * 0.5 * size.x, (unit[4] - unit[1]) * 0.5 * size.y, (unit[5] - unit[2]) * 0.5 * size.z);
+                            let mut b = Body::new(*c + local, Quat::IDENTITY, half, Vec::new());
+                            let out = (b.x - mid).norm();
+                            let r = self.rng.unit();
+                            b.v = base * 0.5 + out * 1.3 + r * 0.6 + v3(0.0, 0.8, 0.0);
+                            b.w = self.rng.unit() * self.rng.range(2.0, 8.0);
+                            bodies.push(b);
+                            looks.push(Look { sprite: SP_FLAT, tex: [0.0; 6], rgb: *rgb });
+                        }
+                    } else {
+                        let mut b = Body::new(*c, Quat::IDENTITY, *h, Vec::new());
+                        if mode == 2 {
+                            let out = (b.x - mid).norm();
+                            let r = self.rng.unit();
+                            b.v = base * 0.5 + out * 1.4 + r * 0.6 + v3(0.0, 0.8, 0.0);
+                            b.w = self.rng.unit() * self.rng.range(2.0, 6.0);
+                        } else {
+                            // Knocked over onto its side: the whole pig already tipping about
+                            // the feet on that side, turning on as one.
+                            let pivot = v3(0.0, 0.0, 0.32);
+                            let tip = Quat::axis_angle(v3(1.0, 0.0, 0.0), 0.45);
+                            b.x = pivot + tip.rotate(b.x - pivot);
+                            b.q = tip;
+                            let w = v3(3.4, 0.0, 0.0);
+                            b.v = w.cross(b.x - pivot) + v3(0.2, 0.3, 0.3);
+                            b.w = w;
+                        }
+                        bodies.push(b);
+                        looks.push(Look { sprite: SP_FLAT, tex: [0.0; 6], rgb: *rgb });
+                    }
+                }
+                let mut joints = Vec::new();
+                if mode == 1 {
+                    // The head at the neck, each leg at its hip.
+                    let p = 1.0 / 16.0;
+                    let pivot = v3(0.0, 0.0, 0.32);
+                    let tip = Quat::axis_angle(v3(1.0, 0.0, 0.0), 0.45);
+                    let mut join = |a: usize, b: usize, at: V3| {
+                        // In each part's own frame (the parts are turned by `tip`).
+                        let at = pivot + tip.rotate(at - pivot);
+                        let ra = bodies[a].q.conj().rotate(at - bodies[a].x);
+                        let rb = bodies[b].q.conj().rotate(at - bodies[b].x);
+                        joints.push(Joint { a, b, ra, rb });
+                    };
+                    join(0, 1, v3(7.0 * p, 11.0 * p, 0.0));
+                    join(1, 2, v3(14.0 * p, 10.5 * p, 0.0));
+                    for leg in 3..7 {
+                        let c = parts[leg].0;
+                        join(0, leg, v3(c.x, 6.0 * p, c.z));
+                    }
+                }
+                self.add(bodies, looks, joints);
+            }
+            Scene::Block(style) => {
+                let b = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+                let mut bodies = Vec::new();
+                let mut looks = Vec::new();
+                let o = v3(-0.5, 0.0, -0.5);
+                for (piece, q, v, w) in block_pieces(style, b, 1.0, 8, &mut self.rng) {
+                    let c = v3((piece[0] + piece[3]) * 0.5, (piece[1] + piece[4]) * 0.5, (piece[2] + piece[5]) * 0.5);
+                    let h = v3((piece[3] - piece[0]) * 0.5, (piece[4] - piece[1]) * 0.5, (piece[5] - piece[2]) * 0.5);
+                    let mut body = Body::new(o + c, q, h, Vec::new());
+                    body.v = v;
+                    body.w = w;
+                    bodies.push(body);
+                    looks.push(Look { sprite: SP_STONE, tex: piece, rgb: [1.0, 1.0, 1.0] });
+                }
+                self.add(bodies, looks, Vec::new());
+            }
+            Scene::Collapse => {
+                let mut bodies = Vec::new();
+                let mut looks = Vec::new();
+                let foot = v3(1.5, 0.0, 1.0);
+                let push = v3(0.8, 0.0, -0.6).norm();
+                let side = v3(-push.z, 0.0, push.x);
+                for (p, sprite) in pillar() {
+                    let o = v3(f64::from(p[0]), f64::from(p[1]), f64::from(p[2]));
+                    let up = (o.y + 0.5 - foot.y).max(0.0);
+                    // The bottom stays; the rest breaks off in lumps as it goes over.
+                    if p[1] == 0 {
+                        continue;
+                    }
+                    for (piece, q, _, _) in block_pieces(3, [0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 1.0, 3, &mut self.rng) {
+                        let c = v3((piece[0] + piece[3]) * 0.5, (piece[1] + piece[4]) * 0.5, (piece[2] + piece[5]) * 0.5);
+                        let h = v3((piece[3] - piece[0]) * 0.5, (piece[4] - piece[1]) * 0.5, (piece[5] - piece[2]) * 0.5);
+                        let mut body = Body::new(o + c, q, h, Vec::new());
+                        body.v = push * (0.55 * up) + v3(self.rng.range(-0.3, 0.3), self.rng.range(-0.1, 0.4), self.rng.range(-0.3, 0.3));
+                        body.w = side * (-0.6) + self.rng.unit() * self.rng.range(0.3, 1.5);
+                        bodies.push(body);
+                        looks.push(Look { sprite, tex: piece, rgb: [1.0, 1.0, 1.0] });
+                    }
+                }
+                self.add(bodies, looks, Vec::new());
+            }
+            Scene::Weather => {}
+        }
+    }
+
+    /// Moves the scene on by `dt` seconds (and starts it over when its time is up).
+    pub fn step(&mut self, dt: f64) {
+        let dt = dt.clamp(0.0, 0.05);
+        self.t += dt;
+        if self.t > self.length() {
+            let scene = self.scene;
+            let seed = self.rng.next().to_bits();
+            *self = SetupScene::new(scene, seed);
+            return;
+        }
+        if !self.broken && self.t >= self.moment() {
+            self.break_now();
+        }
+        if self.broken {
+            self.physics.step(dt, EARTH, &SetupGround);
+        }
+        if self.scene == Scene::Weather {
+            // Rain over the pond and the grass; each drop that lands splashes.
+            for _ in 0..((dt * 520.0).round() as usize) {
+                let x = self.rng.range(-9.0, 9.0);
+                let z = self.rng.range(-2.0, 14.0);
+                let at = v3(x + 2.0, self.rng.range(7.0, 10.0), z);
+                self.rain.push((at, v3(-3.0, -18.0, 0.0)));
+            }
+            let mut landed = Vec::new();
+            self.rain.retain_mut(|(x, v)| {
+                *x = *x + *v * dt;
+                if x.y <= 0.02 {
+                    landed.push(v3(x.x, 0.02, x.z));
+                    false
+                } else {
+                    true
+                }
+            });
+            for at in landed {
+                for _ in 0..3 {
+                    let r = self.rng.unit();
+                    let v = v3(r.x * 0.9, self.rng.range(1.2, 2.4), r.z * 0.9);
+                    self.spray.push((at, v, 0.0));
+                }
+            }
+            self.spray.retain_mut(|(x, v, age)| {
+                *age += dt;
+                v.y -= EARTH * 0.6 * dt;
+                *x = *x + *v * dt;
+                *age < 0.32 && x.y > 0.0
+            });
+        }
+    }
+
+    /// The scene through its camera, for a panel `w` by `h` GUI pixels whose middle is at
+    /// (`cx`, `cy`). `focus` lights the panel up (the pointer is on it).
+    pub fn quads(&self, cx: f32, cy: f32, w: f32, h: f32) -> Vec<SetupQuad> {
+        let (eye, target, focal) = match self.scene {
+            Scene::Mob(_) | Scene::Block(_) => (v3(0.0, 4.6, -6.0), v3(0.0, 0.3, 0.6), h as f64 * 1.1),
+            Scene::Weather => (v3(0.0, 2.4, -5.5), v3(0.0, 1.2, 6.0), w as f64 * 0.55),
+            Scene::Collapse => (v3(-3.0, 1.2, -10.0), v3(1.0, 3.8, 1.0), w as f64 * 0.46),
+        };
+        let cam = SetupCamera::new(eye, target, focal, cx, cy);
+        let mut out = Vec::new();
+        let fog = match self.scene {
+            Scene::Weather => [0.32, 0.38, 0.42],
+            Scene::Collapse => [0.80, 0.84, 0.87],
+            _ => [0.50, 0.62, 0.72],
+        };
+        // The grass: tiles out to the distance, fading into the haze.
+        let (zx, zz) = match self.scene {
+            Scene::Collapse => ((-14, 16), (-8, 26)),
+            Scene::Weather => ((-14, 14), (-3, 26)),
+            _ => ((-8, 8), (-5, 22)),
+        };
+        let grass = match self.scene {
+            Scene::Weather => [0.30, 0.44, 0.24],
+            _ => [0.45, 0.66, 0.30],
+        };
+        for x in zx.0..zx.1 {
+            for z in zz.0..zz.1 {
+                let pond = self.scene == Scene::Weather && (-5..5).contains(&x) && (1..9).contains(&z) && !(x == -5 && z == 8);
+                let (sprite, rgb) = if pond { (SP_WATER, [0.25, 0.36, 0.55]) } else { (SP_GRASS, grass) };
+                let c = [v3(f64::from(x), 0.0, f64::from(z)), v3(f64::from(x), 0.0, f64::from(z) + 1.0), v3(f64::from(x) + 1.0, 0.0, f64::from(z) + 1.0), v3(f64::from(x) + 1.0, 0.0, f64::from(z))];
+                let mid = (c[0] + c[2]) * 0.5;
+                let haze = setup_haze((mid - eye).len());
+                let rgb = mix3(rgb, fog, haze);
+                cam.push(&mut out, c, sprite, [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]], [rgb[0] as f32, rgb[1] as f32, rgb[2] as f32, 1.0]);
+            }
+        }
+        let sun = v3(-0.45, 0.8, -0.5).norm();
+        let shade = |n: V3| 0.58 + 0.42 * n.dot(sun).max(0.0);
+        // What stands before it breaks.
+        let mut boxes: Vec<(V3, Quat, V3, Look)> = Vec::new();
+        if !self.broken {
+            match self.scene {
+                Scene::Mob(_) => {
+                    for (c, h, rgb) in pig_parts() {
+                        boxes.push((c, Quat::IDENTITY, h, Look { sprite: SP_FLAT, tex: [0.0; 6], rgb }));
+                    }
+                }
+                Scene::Block(_) => boxes.push((v3(0.0, 0.5, 0.0), Quat::IDENTITY, v3(0.5, 0.5, 0.5), Look { sprite: SP_STONE, tex: [0.0, 0.0, 0.0, 1.0, 1.0, 1.0], rgb: [1.0; 3] })),
+                Scene::Collapse => {}
+                Scene::Weather => {}
+            }
+        }
+        if self.scene == Scene::Collapse {
+            for (p, sprite) in pillar() {
+                if !self.broken || p[1] == 0 {
+                    let c = v3(f64::from(p[0]) + 0.5, f64::from(p[1]) + 0.5, f64::from(p[2]) + 0.5);
+                    boxes.push((c, Quat::IDENTITY, v3(0.5, 0.5, 0.5), Look { sprite, tex: [0.0, 0.0, 0.0, 1.0, 1.0, 1.0], rgb: [1.0; 3] }));
+                }
+            }
+            // The rock face it breaks from.
+            for y in 0..10 {
+                for x in -7..0 {
+                    for z in 0..3 {
+                        if z < 2 && x < -4 + y / 3 {
+                            continue;
+                        }
+                        let sprite = if y >= 8 { SP_DIRT } else { SP_STONE };
+                        boxes.push((v3(f64::from(x) + 0.5, f64::from(y) + 0.5, f64::from(z) + 0.5), Quat::IDENTITY, v3(0.5, 0.5, 0.5), Look { sprite, tex: [0.0, 0.0, 0.0, 1.0, 1.0, 1.0], rgb: [0.85; 3] }));
+                    }
+                }
+            }
+        }
+        if self.scene == Scene::Weather {
+            for (c, h, sprite, rgb) in weather_trees() {
+                boxes.push((c, Quat::IDENTITY, h, Look { sprite, tex: [0.0, 0.0, 0.0, 1.0, 1.0, 1.0], rgb }));
+            }
+        }
+        for (i, b) in self.physics.bodies.iter().enumerate() {
+            if let Some(look) = self.looks.get(i) {
+                boxes.push((b.x, b.q, b.half, *look));
+            }
+        }
+        for (c, q, h, look) in &boxes {
+            // A soft shadow on the grass under it.
+            if c.y - h.y < 2.5 && self.scene != Scene::Weather {
+                let k = (1.0 - (c.y - h.y) / 2.5).clamp(0.0, 1.0) * 0.12;
+                // Two squares turned against each other, twice: a soft round blot.
+                for (grow, a) in [(1.35, 0.0), (1.35, 0.785), (0.95, 0.0), (0.95, 0.785)] {
+                    let r = (h.x.max(h.z) * grow + 0.04) * std::f64::consts::SQRT_2;
+                    let s = [0.0, 1.0, 2.0, 3.0].map(|i: f64| {
+                        let t = a + std::f64::consts::FRAC_PI_4 + i * std::f64::consts::FRAC_PI_2;
+                        v3(c.x + r * t.cos(), 0.004, c.z + r * t.sin())
+                    });
+                    cam.push(&mut out, [s[0], s[3], s[2], s[1]], SP_FLAT, [[0.0; 2]; 4], [0.0, 0.0, 0.0, k as f32]);
+                }
+            }
+            let haze = setup_haze((*c - eye).len());
+            for (n, corners) in box_faces(*h) {
+                let n_world = q.rotate(n);
+                let world: [V3; 4] = corners.map(|l| *c + q.rotate(l));
+                // Where on the sprite: the face's own part of the block it came from.
+                let tex = look.tex;
+                let uv = corners.map(|l| {
+                    let f = |k: usize, v: f64| -> f64 {
+                        let (lo, hi) = (tex[k], tex[k + 3]);
+                        let half = [h.x, h.y, h.z][k].max(1e-6);
+                        lo + (hi - lo) * ((v / half) * 0.5 + 0.5)
+                    };
+                    let (u, v) = if n.x != 0.0 {
+                        (f(2, l.z), 1.0 - f(1, l.y))
+                    } else if n.y != 0.0 {
+                        (f(0, l.x), f(2, l.z))
+                    } else {
+                        (f(0, l.x), 1.0 - f(1, l.y))
+                    };
+                    [u.clamp(0.0, 1.0) as f32, v.clamp(0.0, 1.0) as f32]
+                });
+                let k = shade(n_world);
+                let rgb = mix3([look.rgb[0] * k, look.rgb[1] * k, look.rgb[2] * k], fog, haze);
+                cam.push(&mut out, world, look.sprite, uv, [rgb[0] as f32, rgb[1] as f32, rgb[2] as f32, 1.0]);
+            }
+        }
+        // Rain: thin streaks; the spray: little white-blue drops.
+        for (x, v) in &self.rain {
+            let a = *x;
+            let b = *x - *v * 0.035;
+            if let (Some(pa), Some(pb)) = (cam.project(a), cam.project(b)) {
+                let width = 0.6f32;
+                out.push(SetupQuad {
+                    p: [[pa[0] - width, pa[1], pa[2]], [pb[0] - width, pb[1], pb[2]], [pb[0] + width, pb[1], pb[2]], [pa[0] + width, pa[1], pa[2]]],
+                    sprite: SP_FLAT,
+                    uv: [[0.0; 2]; 4],
+                    color: [0.42, 0.52, 0.85, 0.55],
+                });
+            }
+        }
+        for (x, _, age) in &self.spray {
+            if let Some(p) = cam.project(*x) {
+                let r = (1.4 * (1.0 - age / 0.32)) as f32 + 0.5;
+                out.push(SetupQuad {
+                    p: [[p[0] - r, p[1] - r, p[2]], [p[0] - r, p[1] + r, p[2]], [p[0] + r, p[1] + r, p[2]], [p[0] + r, p[1] - r, p[2]]],
+                    sprite: SP_FLAT,
+                    uv: [[0.0; 2]; 4],
+                    color: [0.55, 0.62, 0.95, 0.85],
+                });
+            }
+        }
+        out
+    }
+}
+
+/// How much of the haze is between the eye and a point `d` blocks away.
+fn setup_haze(d: f64) -> f64 {
+    ((d - 9.0) / 22.0).clamp(0.0, 0.85)
+}
+
+/// A box's six faces (outward normal and four corners, counter-clockwise from outside), from
+/// its half size.
+fn box_faces(h: V3) -> [(V3, [V3; 4]); 6] {
+    let (x, y, z) = (h.x, h.y, h.z);
+    [
+        (v3(1.0, 0.0, 0.0), [v3(x, -y, -z), v3(x, y, -z), v3(x, y, z), v3(x, -y, z)]),
+        (v3(-1.0, 0.0, 0.0), [v3(-x, -y, z), v3(-x, y, z), v3(-x, y, -z), v3(-x, -y, -z)]),
+        (v3(0.0, 1.0, 0.0), [v3(-x, y, -z), v3(-x, y, z), v3(x, y, z), v3(x, y, -z)]),
+        (v3(0.0, -1.0, 0.0), [v3(-x, -y, z), v3(-x, -y, -z), v3(x, -y, -z), v3(x, -y, z)]),
+        (v3(0.0, 0.0, 1.0), [v3(x, -y, z), v3(x, y, z), v3(-x, y, z), v3(-x, -y, z)]),
+        (v3(0.0, 0.0, -1.0), [v3(-x, -y, -z), v3(-x, y, -z), v3(x, y, -z), v3(x, -y, -z)]),
+    ]
+}
+
+/// A camera at `eye` looking at `target`, `focal` GUI pixels per unit at one block's distance,
+/// the middle of its picture at (`cx`, `cy`).
+struct SetupCamera {
+    eye: V3,
+    right: V3,
+    up: V3,
+    fwd: V3,
+    focal: f64,
+    cx: f32,
+    cy: f32,
+}
+
+impl SetupCamera {
+    fn new(eye: V3, target: V3, focal: f64, cx: f32, cy: f32) -> SetupCamera {
+        let fwd = (target - eye).norm();
+        let right = v3(0.0, 1.0, 0.0).cross(fwd).norm();
+        let up = fwd.cross(right);
+        SetupCamera { eye, right, up, fwd, focal, cx, cy }
+    }
+
+    /// Screen x, y and depth (larger: nearer) of a world point, None behind the camera.
+    fn project(&self, p: V3) -> Option<[f32; 3]> {
+        let d = p - self.eye;
+        let z = d.dot(self.fwd);
+        if z < 0.3 {
+            return None;
+        }
+        let x = d.dot(self.right) / z * self.focal;
+        let y = d.dot(self.up) / z * self.focal;
+        Some([self.cx - x as f32, self.cy - y as f32, (-z) as f32])
+    }
+
+    /// A quad of the world, if it is in front of the camera and faces it.
+    fn push(&self, out: &mut Vec<SetupQuad>, c: [V3; 4], sprite: u8, uv: [[f32; 2]; 4], color: [f32; 4]) {
+        let n = (c[1] - c[0]).cross(c[2] - c[0]);
+        if n.dot(self.eye - c[0]) <= 0.0 && color[3] >= 1.0 {
+            return;
+        }
+        let mut p = [[0.0f32; 3]; 4];
+        for k in 0..4 {
+            let Some(q) = self.project(c[k]) else {
+                return;
+            };
+            p[k] = q;
+        }
+        out.push(SetupQuad { p, sprite, uv, color });
+    }
+}
+
+/// The quick setup's pages: (title, choices: (name, the scene it shows)). The last page has none:
+/// it says the setup is done.
+pub const SETUP_PAGES: usize = 4;
+
+pub fn setup_page(page: usize) -> (&'static str, Vec<(&'static str, Scene)>) {
+    match page {
+        0 => ("Mobs", vec![("Blocky", Scene::Mob(2)), ("Ragdoll", Scene::Mob(1)), ("Fractured", Scene::Mob(3))]),
+        1 => ("Blocks", vec![("Blocky", Scene::Block(0)), ("Particles", Scene::Block(1)), ("Crumbled Voxel", Scene::Block(2)), ("Fractured", Scene::Block(3))]),
+        2 => ("Weather", vec![("Particles", Scene::Weather)]),
+        3 => ("Collapsing Structures", vec![("On", Scene::Collapse)]),
+        _ => ("", Vec::new()),
+    }
+}
+
+/// The choice `pick` on `page` (None: Off), into the settings.
+pub fn setup_choose(s: &mut Settings, page: usize, pick: Option<usize>) {
+    match page {
+        0 => s.deaths = pick.map_or(0, |i| [2, 1, 3][i.min(2)]),
+        1 => match pick {
+            Some(i) => {
+                s.blocks = true;
+                s.block_style = (i as u8).min(3);
+            }
+            None => s.blocks = false,
+        },
+        2 => s.weather = pick.is_some(),
+        3 => s.collapse = pick.is_some(),
+        _ => {}
+    }
+}
+
+/// The quick setup's own state: the page it is on and its previews.
+pub struct Setup {
+    pub page: usize,
+    pub scenes: Vec<SetupScene>,
+    clock: Option<std::time::Instant>,
+}
+
+static SETUP: Mutex<Option<Setup>> = Mutex::new(None);
+
+/// Whether the quick setup shows (the settings are read and it was neither done nor skipped).
+pub fn setup_visible() -> bool {
+    let g = SETTINGS.lock().unwrap_or_else(|e| e.into_inner());
+    matches!(g.as_ref(), Some((s, Some(_))) if !s.setup)
+}
+
+/// Runs `f` on the quick setup, its previews moved on to now.
+pub fn with_setup<R>(f: impl FnOnce(&mut Setup) -> R) -> R {
+    let mut g = SETUP.lock().unwrap_or_else(|e| e.into_inner());
+    let s = g.get_or_insert_with(|| Setup { page: 0, scenes: Vec::new(), clock: None });
+    let now = std::time::Instant::now();
+    let dt = s.clock.map_or(0.0, |c| now.duration_since(c).as_secs_f64());
+    s.clock = Some(now);
+    let want: Vec<Scene> = setup_page(s.page).1.iter().map(|c| c.1).collect();
+    if s.scenes.iter().map(|c| c.scene).collect::<Vec<_>>() != want {
+        s.scenes = want.iter().enumerate().map(|(i, sc)| SetupScene::new(*sc, 17 + i as u64 * 31)).collect();
+    }
+    for sc in &mut s.scenes {
+        sc.step(dt);
+    }
+    f(s)
+}
+
+/// The quick setup: `pick` on its page (None: Off). Moves to the next page.
+pub fn setup_pick(pick: Option<usize>) {
+    with_setup(|s| {
+        let page = s.page;
+        update_settings(|st| setup_choose(st, page, pick));
+        s.page = (s.page + 1).min(SETUP_PAGES);
+    });
+}
+
+/// Ends the quick setup (Skip Setup, or Continue on its last page).
+pub fn setup_finish() {
+    update_settings(|st| st.setup = true);
+    with_setup(|s| s.page = 0);
+}
+
+/// One thing the quick setup draws, in GUI pixels; colours are rgba bytes.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SetupUi {
+    Rect { x: f32, y: f32, w: f32, h: f32, color: [u8; 4] },
+    Gradient { x: f32, y: f32, w: f32, h: f32, top: [u8; 4], bottom: [u8; 4] },
+    /// Text centred on `x` (its top at `y`).
+    Text { text: String, x: f32, y: f32, color: [u8; 4] },
+    /// Preview `index` of the page, filling the rectangle (clipped to it).
+    Scene { index: usize, x: f32, y: f32, w: f32, h: f32 },
+}
+
+/// Where a press on the quick setup lands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SetupHit {
+    None,
+    Off,
+    Skip,
+    Pick(usize),
+    Continue,
+}
+
+const UI_YELLOW: [u8; 4] = [255, 204, 64, 255];
+const UI_WHITE: [u8; 4] = [255, 255, 255, 255];
+
+struct SetupBox {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+}
+
+impl SetupBox {
+    fn has(&self, (x, y): (f32, f32)) -> bool {
+        x >= self.x && x < self.x + self.w && y >= self.y && y < self.y + self.h
+    }
+}
+
+/// The quick setup's layout on a `w` by `h` screen.
+fn setup_boxes(page: usize, w: f32, h: f32) -> (SetupBox, SetupBox, Vec<SetupBox>, SetupBox) {
+    let off = SetupBox { x: (w * 0.016).round(), y: (h * 0.045).round(), w: (w * 0.159).round(), h: (h * 0.069).round() };
+    let skip_w = (w * 0.165).round();
+    let skip = SetupBox { x: w - (w * 0.016).round() - skip_w, y: off.y, w: skip_w, h: off.h };
+    let n = setup_page(page).1.len().max(1);
+    let col = w / n as f32;
+    let top = (h * 0.15).round();
+    let bottom = (h * 0.832).round();
+    let panels = (0..n).map(|i| SetupBox { x: (col * i as f32).round(), y: top, w: (col * (i + 1) as f32).round() - (col * i as f32).round(), h: bottom - top }).collect();
+    let cont = SetupBox { x: (w * 0.391).round(), y: (h * 0.679).round(), w: (w * 0.218).round(), h: (h * 0.079).round() };
+    (off, skip, panels, cont)
+}
+
+fn setup_button(out: &mut Vec<SetupUi>, b: &SetupBox, text: &str, hover: bool) {
+    out.push(SetupUi::Rect { x: b.x, y: b.y, w: b.w, h: b.h, color: UI_WHITE });
+    let fill = if hover { [122, 140, 162, 255] } else { [72, 84, 98, 255] };
+    out.push(SetupUi::Rect { x: b.x + 1.0, y: b.y + 1.0, w: b.w - 2.0, h: b.h - 2.0, color: fill });
+    out.push(SetupUi::Text { text: text.to_string(), x: b.x + b.w * 0.5, y: b.y + (b.h - 8.0) * 0.5, color: UI_WHITE });
+}
+
+/// Everything the quick setup draws on page `page`, on a `w` by `h` screen with the pointer at
+/// `cursor`.
+pub fn setup_ui(page: usize, w: f32, h: f32, cursor: (f32, f32)) -> Vec<SetupUi> {
+    let mut out = Vec::new();
+    let (off, skip, panels, cont) = setup_boxes(page, w, h);
+    if page >= SETUP_PAGES {
+        // Done: the summary.
+        out.push(SetupUi::Gradient { x: 0.0, y: 0.0, w, h, top: [22, 26, 40, 255], bottom: [46, 38, 54, 255] });
+        let (x0, y0, x1, y1) = ((w * 0.133).round(), (h * 0.203).round(), (w * 0.867).round(), (h * 0.815).round());
+        out.push(SetupUi::Rect { x: x0 + 3.0, y: y0 + 3.0, w: x1 - x0, h: y1 - y0, color: [0, 0, 0, 90] });
+        out.push(SetupUi::Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0, color: UI_YELLOW });
+        out.push(SetupUi::Rect { x: x0 + 1.0, y: y0 + 1.0, w: x1 - x0 - 2.0, h: y1 - y0 - 2.0, color: [42, 42, 36, 255] });
+        // A bar chart: the settings, set.
+        let cx = (w * 0.5).round();
+        let base = (h * 0.31).round();
+        for (dx, bh) in [(-14.0, 10.0), (-3.0, 17.0), (8.0, 13.0)] {
+            out.push(SetupUi::Rect { x: cx + dx, y: base - bh, w: 6.0, h: bh, color: UI_YELLOW });
+        }
+        out.push(SetupUi::Text { text: "Quick setup complete".into(), x: cx, y: (h * 0.355).round(), color: UI_WHITE });
+        out.push(SetupUi::Text { text: "You can find more detailed settings under".into(), x: cx, y: (h * 0.455).round(), color: [224, 224, 224, 255] });
+        out.push(SetupUi::Text { text: "Options -> Mods -> Horizon Physics".into(), x: cx, y: (h * 0.508).round(), color: UI_YELLOW });
+        out.push(SetupUi::Text { text: "You can change these choices there at any time.".into(), x: cx, y: (h * 0.566).round(), color: [224, 224, 224, 255] });
+        setup_button(&mut out, &cont, "Continue", cont.has(cursor));
+        return out;
+    }
+    let (name, choices) = setup_page(page);
+    let top = panels[0].y;
+    let bottom = panels[0].y + panels[0].h;
+    let hovered = panels.iter().position(|p| p.has(cursor));
+    // The previews fill the whole height; the bars lie over them.
+    for (i, p) in panels.iter().enumerate() {
+        let (top_sky, low_sky) = match choices.get(i).map(|c| c.1) {
+            Some(Scene::Weather) => ([62, 72, 84, 255], [82, 96, 106, 255]),
+            Some(Scene::Collapse) => ([112, 150, 205, 255], [205, 214, 222, 255]),
+            _ => ([120, 160, 120, 255], [128, 158, 184, 255]),
+        };
+        out.push(SetupUi::Gradient { x: p.x, y: 0.0, w: p.w, h, top: top_sky, bottom: low_sky });
+        out.push(SetupUi::Scene { index: i, x: p.x, y: 0.0, w: p.w, h });
+        if hovered != Some(i) {
+            out.push(SetupUi::Rect { x: p.x, y: 0.0, w: p.w, h, color: [0, 0, 0, 72] });
+        }
+    }
+    out.push(SetupUi::Rect { x: 0.0, y: 0.0, w, h: top, color: [8, 10, 14, 150] });
+    out.push(SetupUi::Rect { x: 0.0, y: bottom, w, h: h - bottom, color: [24, 27, 18, 236] });
+    // Thin lines between the previews; the one under the pointer framed in white.
+    for (i, p) in panels.iter().enumerate().skip(1) {
+        let _ = i;
+        out.push(SetupUi::Rect { x: p.x, y: top, w: 1.0, h: bottom - top, color: [190, 220, 150, 60] });
+    }
+    if let Some(i) = hovered
+        && panels.len() > 1
+    {
+        let p = &panels[i];
+        if i > 0 {
+            out.push(SetupUi::Rect { x: p.x - 1.0, y: 0.0, w: 2.0, h, color: UI_WHITE });
+        }
+        if i + 1 < panels.len() {
+            out.push(SetupUi::Rect { x: p.x + p.w - 1.0, y: 0.0, w: 2.0, h, color: UI_WHITE });
+        }
+    }
+    out.push(SetupUi::Text { text: "Horizon Physics Quick Setup".into(), x: (w * 0.5).round(), y: (h * 0.049).round(), color: UI_WHITE });
+    out.push(SetupUi::Text { text: name.into(), x: (w * 0.5).round(), y: (h * 0.098).round(), color: UI_WHITE });
+    setup_button(&mut out, &off, "Off", off.has(cursor));
+    setup_button(&mut out, &skip, "Skip Setup", skip.has(cursor));
+    for (p, (label, _)) in panels.iter().zip(&choices) {
+        let cx = (p.x + p.w * 0.5).round();
+        out.push(SetupUi::Text { text: (*label).into(), x: cx, y: (h * 0.878).round(), color: UI_WHITE });
+        out.push(SetupUi::Text { text: "FPS Impact: Low".into(), x: cx, y: (h * 0.93).round(), color: UI_YELLOW });
+    }
+    if choices.len() == 1 {
+        out.push(SetupUi::Text { text: "Click anywhere to select".into(), x: (w * 0.5).round(), y: (h * 0.777).round(), color: UI_YELLOW });
+    }
+    out
+}
+
+/// What a press at (`x`, `y`) on page `page` of a `w` by `h` screen hits.
+pub fn setup_hit(page: usize, w: f32, h: f32, x: f32, y: f32) -> SetupHit {
+    let (off, skip, panels, cont) = setup_boxes(page, w, h);
+    if page >= SETUP_PAGES {
+        return if cont.has((x, y)) { SetupHit::Continue } else { SetupHit::None };
+    }
+    if off.has((x, y)) {
+        return SetupHit::Off;
+    }
+    if skip.has((x, y)) {
+        return SetupHit::Skip;
+    }
+    match panels.iter().position(|p| p.has((x, y))) {
+        Some(i) => SetupHit::Pick(i),
+        None => SetupHit::None,
+    }
+}
+
+/// A press on the quick setup. Returns whether it hit anything (for the click's sound).
+pub fn setup_click(w: f32, h: f32, x: f32, y: f32) -> bool {
+    let page = with_setup(|s| s.page);
+    match setup_hit(page, w, h, x, y) {
+        SetupHit::Off => setup_pick(None),
+        SetupHit::Pick(i) => setup_pick(Some(i)),
+        SetupHit::Skip | SetupHit::Continue => setup_finish(),
+        SetupHit::None => return false,
+    }
+    true
+}
+

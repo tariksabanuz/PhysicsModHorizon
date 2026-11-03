@@ -127,6 +127,31 @@ fn horizon_physics_world(game: &crate::game::Game<'_>, camera: glam::DVec3, out:
             }
         }
     }
+    // Rain splashing on the ground around the camera.
+    if hp::weather_on() {
+        let rain = game.world.weather.levels(1.0).0;
+        if rain > 0.2 {
+            static SEED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0x9E37_79B9_7F4A_7C15);
+            let mut next = || {
+                let mut x = SEED.load(std::sync::atomic::Ordering::Relaxed);
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                SEED.store(x, std::sync::atomic::Ordering::Relaxed);
+                (x >> 11) as f64 / (1u64 << 53) as f64
+            };
+            for _ in 0..(rain * 14.0) as usize {
+                let x = camera.x + (next() - 0.5) * 24.0;
+                let z = camera.z + (next() - 0.5) * 24.0;
+                let (bx, bz) = (x.floor() as i32, z.floor() as i32);
+                let y = game.rain_height(bx, bz);
+                if (f64::from(y) - camera.y).abs() > 16.0 || game.precipitation(bx, y, bz) != Some(false) {
+                    continue;
+                }
+                hp::rain_splash([x, f64::from(y), z]);
+            }
+        }
+    }
     // Splashes: the player's feet going into water fast.
     if hp::liquids_on()
         && let Some(p) = game.player.as_ref()

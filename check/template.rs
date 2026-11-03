@@ -177,8 +177,44 @@ pub mod gizmos {
     pub struct Line { pub start: [f64; 3], pub end: [f64; 3], pub color: u32, pub width: f32 }
 }
 pub mod hud {
+    use std::collections::HashMap;
     #[derive(Clone, Copy, Debug)]
     pub struct Rect { pub u0: f32, pub v0: f32, pub u1: f32, pub v1: f32, pub w: u32, pub h: u32 }
+    pub struct Font;
+    impl Font { pub fn white(&self) -> Rect { Rect { u0: 0.0, v0: 0.0, u1: 0.0, v1: 0.0, w: 1, h: 1 } } }
+    pub struct HudAtlas { pub sprites: HashMap<String, Rect>, pub font: Font }
+    pub struct HudVertex;
+    pub struct HudBatch { pub vertices: Vec<HudVertex>, pub width: f32, pub height: f32 }
+    impl HudBatch {
+        pub fn fill(&mut self, atlas: &HudAtlas, x: f32, y: f32, w: f32, h: f32, color: u32) {}
+        pub fn fill_gradient(&mut self, atlas: &HudAtlas, (x, y, w, h): (f32, f32, f32, f32), top: u32, bottom: u32) {}
+        pub fn text_width(atlas: &HudAtlas, text: &str) -> f32 { 0.0 }
+        pub fn text(&mut self, atlas: &HudAtlas, text: &str, x: f32, y: f32, color: u32, shadow: bool) -> f32 { 0.0 }
+        pub fn quad_3d(&mut self, p: [[f32; 3]; 4], uv: [[f32; 2]; 4], color: u32) {}
+        pub fn depth_since(&mut self, start: usize, clip: [f32; 4]) {}
+    }
+    pub fn rgba(r: u8, g: u8, b: u8, a: u8) -> u32 { 0 }
+}
+
+pub mod title {
+    use crate::hud::{HudAtlas, HudBatch, rgba};
+    pub struct Title;
+    pub enum Action { None }
+    impl Title {
+        pub fn draw(&self, atlas: &HudAtlas, batch: &mut HudBatch, cursor: (f32, f32), hide_splash: bool) {
+            //SETUP_DRAW//
+            if let ::core::ops::ControlFlow::Break(()) = __h_setup_draw(self, atlas, &mut *batch, cursor, hide_splash) { return; }
+        }
+        pub fn click(&mut self, x: f32, y: f32, size: (f32, f32)) -> (Action, bool) {
+            //SETUP_CLICK//
+            if let ::core::ops::ControlFlow::Break(r) = __h_setup_click(&mut *self, x, y, size) { return r; }
+            (Action::None, false)
+        }
+    }
+}
+
+pub mod native_horizon_physics_setup {
+    //SETUP_MODULE//
 }
 
 pub mod item_render {
@@ -222,7 +258,9 @@ pub mod game {
     impl DirtySections { pub fn insert(&mut self, (x, sy, z): (i32, i32, i32)) {} }
     pub struct ColumnLayout;
     impl ColumnLayout { pub fn min_y(&self) -> i32 { -64 } pub fn height(&self) -> i32 { 384 } }
-    pub struct World { pub game_time: i64, pub dirty_sections: DirtySections }
+    pub struct Weather;
+    impl Weather { pub fn levels(&self, partial: f32) -> (f32, f32) { (0.0, 0.0) } }
+    pub struct World { pub game_time: i64, pub dirty_sections: DirtySections, pub weather: Weather }
     impl World {
         pub fn layout(&self) -> ColumnLayout { ColumnLayout }
         pub fn block(&self, x: i32, y: i32, z: i32) -> BlockStateId { BlockStateId(0) }
@@ -283,6 +321,12 @@ pub mod game {
                 ::core::ops::ControlFlow::Continue(()) => {}
             }
             Ok(())
+        }
+        fn rain_height(&self, x: i32, z: i32) -> i32 { 64 }
+        fn precipitation(&self, x: i32, y: i32, z: i32) -> Option<bool> { Some(false) }
+        fn frame_hook(&mut self) {
+            //SETUP_LOAD//
+            __h_setup_load(&mut *self);
         }
         fn with_level<R>(&mut self, f: impl FnOnce(&Behaviours, &mut GameLevel<'_>, &mut Ticks) -> R) -> R {
             f(&Behaviours, &mut GameLevel(std::marker::PhantomData), &mut Ticks)
