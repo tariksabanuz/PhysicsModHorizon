@@ -85,8 +85,45 @@ pub struct Sway {
     pub layers: Vec<(u32, u8)>,
     pub waves: bool,
     pub plants: bool,
-    /// The wind setting: 0 calm .. 2.4 strong.
+    /// The wind's strength: 0 calm .. 3 a storm.
     pub wind: f32,
+    /// What else sways: leaves, vines, plants under water.
+    pub leaves: bool,
+    pub vines: bool,
+    pub water_plants: bool,
+    /// How high the waves are and how far things sway (1 as the mod comes), and the froth on
+    /// the crests.
+    pub wave_height: f32,
+    pub sway: f32,
+    pub foam: bool,
+}
+
+/// The Ocean and Dynamic Blocks pages' settings, as the shader takes them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SwayOptions {
+    pub leaves: bool,
+    pub vines: bool,
+    pub water_plants: bool,
+    pub wave_height: f32,
+    pub sway: f32,
+    pub foam: bool,
+}
+
+impl Default for SwayOptions {
+    fn default() -> Self {
+        SwayOptions { leaves: true, vines: true, water_plants: true, wave_height: 1.0, sway: 1.0, foam: true }
+    }
+}
+
+static OPTIONS: Mutex<Option<SwayOptions>> = Mutex::new(None);
+
+/// The settings `set` builds with from now on.
+pub fn set_options(o: SwayOptions) {
+    *OPTIONS.lock().unwrap_or_else(|e| e.into_inner()) = Some(o);
+}
+
+fn options() -> SwayOptions {
+    OPTIONS.lock().ok().and_then(|g| *g).unwrap_or_default()
 }
 
 static SWAY: Mutex<Option<Sway>> = Mutex::new(None);
@@ -108,7 +145,20 @@ pub fn set<'a>(key: usize, sprites: impl FnOnce() -> Vec<(&'a str, u32)>, waves:
         }
     };
     MARKS.store(waves, std::sync::atomic::Ordering::Relaxed);
-    let new = Sway { key, layers, waves, plants, wind };
+    let o = options();
+    let new = Sway {
+        key,
+        layers,
+        waves,
+        plants,
+        wind,
+        leaves: o.leaves,
+        vines: o.vines,
+        water_plants: o.water_plants,
+        wave_height: o.wave_height,
+        sway: o.sway,
+        foam: o.foam,
+    };
     let changed = g.as_ref() != Some(&new);
     *g = Some(new);
     changed
@@ -149,7 +199,13 @@ pub fn wgsl(s: &Sway) -> Option<String> {
 }
 
 pub fn wgsl_with(s: &Sway, shade: bool) -> Option<String> {
-    let wanted = |k: u8| if k == WATER || k == LAVA { s.waves } else { s.plants };
+    let wanted = |k: u8| match k {
+        WATER | LAVA => s.waves,
+        LEAVES => s.leaves,
+        VINES => s.vines,
+        SEAGRASS | SEAGRASS_TOP | KELP => s.water_plants,
+        _ => s.plants,
+    };
     let mut by_kind: [Vec<u32>; 10] = Default::default();
     for &(l, k) in &s.layers {
         if wanted(k) && (k as usize) < by_kind.len() {
@@ -171,6 +227,13 @@ pub fn wgsl_with(s: &Sway, shade: bool) -> Option<String> {
     w.push_str("        default: { return 0u; }\n    }\n}\n");
     let wind = s.wind.max(0.0);
     let _ = write!(w, "const HORIZON_PHYSICS_WIND: f32 = {wind:.3};\nconst HORIZON_PHYSICS_SHADE: bool = {shade};\n");
+    let _ = write!(
+        w,
+        "const HORIZON_PHYSICS_WAVE_HEIGHT: f32 = {:.3};\nconst HORIZON_PHYSICS_SWAY_STRENGTH: f32 = {:.3};\nconst HORIZON_PHYSICS_FOAM: f32 = {:.1};\n",
+        s.wave_height.max(0.0),
+        s.sway.max(0.0),
+        if s.foam { 1.0 } else { 0.0 }
+    );
     w.push_str(&WGSL_BODY.replace("//SWELL//", &swell_wgsl()));
     Some(w)
 }
@@ -208,7 +271,7 @@ fn swell_wgsl() -> String {
     out.push_str(&calls("horizon_physics_lake", &LAKE, "vec3<f32>"));
     out.push_str("// Gerstner's sideways motion of the sea's surface: the water gathers under the crests, which\n// turn sharp, and spreads in the troughs.\nfn horizon_physics_chop_wave(w: vec4<f32>, p: vec2<f32>, t: f32, seed: f32, pace: f32) -> vec2<f32> {\n    let k = 6.2831853 / w.z;\n    let ph = k * dot(w.xy, p) - sqrt(9.8 * k) * pace * t + seed;\n    return -w.xy * (w.w * cos(ph));\n}\n");
     out.push_str(&calls("horizon_physics_chop_sum", &OCEAN, "vec2<f32>"));
-    let _ = writeln!(out, "fn horizon_physics_chop(p: vec2<f32>, t: f32, open: f32) -> vec2<f32> {{\n    return horizon_physics_chop_sum(p, t) * ({:?} * horizon_physics_storm() * horizon_physics_sea(open));\n}}", CHOP as f32);
+    let _ = writeln!(out, "fn horizon_physics_chop(p: vec2<f32>, t: f32, open: f32) -> vec2<f32> {{\n    return horizon_physics_chop_sum(p, t) * ({:?} * horizon_physics_storm() * HORIZON_PHYSICS_WAVE_HEIGHT * horizon_physics_sea(open));\n}}", CHOP as f32);
     out
 }
 
@@ -227,7 +290,12 @@ pub fn water_time(game_time: i64, partial: f64) -> f64 {
 /// (0..1) and wind setting `wind`, as the shader moves it: (up, sideways x, sideways z, dh/dx,
 /// dh/dz), before the distance fade.
 pub fn water_motion(x: f64, z: f64, t: f64, open: f64, wind: f64) -> [f64; 5] {
-    let storm = (0.42 + wind * 0.3).clamp(0.15, 1.6);
+    water_motion_with(x, z, t, open, wind, 1.0)
+}
+
+/// `water_motion` with the waves `height` times as high (the Ocean page's Wave Height).
+pub fn water_motion_with(x: f64, z: f64, t: f64, open: f64, wind: f64, height: f64) -> [f64; 5] {
+    let storm = (0.42 + wind * 0.3).clamp(0.15, 1.6) * height;
     let sea = smoothstep(0.5, 0.9, open);
     let lake = (open * 3.0).clamp(0.0, 1.0) * (1.0 - sea);
     let mut r = [0.0; 5];
@@ -309,6 +377,11 @@ pub fn water_wind() -> f64 {
     current().map_or(1.0, |s| f64::from(s.wind))
 }
 
+/// How high the shader's waves are (Wave Height).
+pub fn water_height() -> f64 {
+    current().map_or(1.0, |s| f64::from(s.wave_height))
+}
+
 /// Whether the waves are on in the shader.
 pub fn waves_on() -> bool {
     current().is_some_and(|s| s.waves)
@@ -366,7 +439,7 @@ fn horizon_physics_swell(p: vec2<f32>, t: f32, open: f32) -> vec3<f32> {
     var r = vec3(0.0);
     if (sea > 0.0) { r += horizon_physics_ocean(p, t) * sea; }
     if (lake > 0.0) { r += horizon_physics_lake(p, t) * lake; }
-    return r * horizon_physics_storm();
+    return r * (horizon_physics_storm() * HORIZON_PHYSICS_WAVE_HEIGHT);
 }
 // The mesher's mark on a water surface's corner (Horizon Physics' fluid hook): its height raised
 // by `code` ten-thousandths of a block over vanilla's 8/9 - 0.001, code 0..7 its openness.
@@ -496,7 +569,9 @@ fn horizon_physics_sway(pos: vec3<f32>, raw: vec3<f32>, uv: vec2<f32>, layer: u3
         }
         default: {}
     }
-    return off * near;
+    // The water's own shape keeps its height setting; the plants sway as far as set.
+    let k = select(HORIZON_PHYSICS_SWAY_STRENGTH, 1.0, kind == 5u || kind == 9u);
+    return off * (near * k);
 }
 // The water's surface, lit as water: the swell and ripples bend the light, the sky is mirrored
 // more at a glancing angle (Fresnel), the sun glitters on it, light shines through the crests.
@@ -533,7 +608,7 @@ fn horizon_physics_surface(layer: u32, pos: vec3<f32>, light: vec2<f32>, lightma
     let rs = max(dot(refl, sun), 0.0);
     let glitter = (pow(rs, 900.0) * 9.0 + pow(rs, 120.0) * 0.9 + pow(rs, 18.0) * 0.08) * day * skylight;
     let moon = pow(max(dot(refl, normalize(frame.moon_direction)), 0.0), 400.0) * 1.5 * (1.0 - day) * skylight;
-    let height = clamp(s.x / (0.75 * horizon_physics_storm()), -1.0, 1.0);
+    let height = clamp(s.x / (0.75 * horizon_physics_storm() * max(HORIZON_PHYSICS_WAVE_HEIGHT, 0.05)), -1.0, 1.0);
     var body = color.rgb * (0.9 + 0.12 * height);
     if (sea > 0.0) {
         // The open sea's own colour: deep blue-green in the troughs, clear teal where the light
@@ -553,7 +628,7 @@ fn horizon_physics_surface(layer: u32, pos: vec3<f32>, light: vec2<f32>, lightma
     var rgb = mix(body, sky, clamp(fresnel * mix(0.9, 0.75, sea), 0.0, 1.0));
     rgb += vec3(1.0, 0.93, 0.78) * glitter + vec3(0.75, 0.82, 1.0) * moon;
     // Froth on the highest crests of open water, more in strong wind.
-    let foam = smoothstep(0.82, 1.0, height) * smoothstep(0.5, 1.2, horizon_physics_storm()) * 0.45 * sea;
+    let foam = smoothstep(0.82, 1.0, height) * smoothstep(0.5, 1.2, horizon_physics_storm()) * 0.45 * sea * HORIZON_PHYSICS_FOAM;
     rgb = mix(rgb, vec3(0.92, 0.95, 0.97) * (0.3 + 0.7 * skylight), foam);
     let opaque = mix(color.a, 0.92, sea);
     let a = clamp(mix(opaque, 1.0, fresnel) + glitter + foam, 0.0, 1.0);
@@ -684,6 +759,13 @@ pub fn snow_profile(x: f64, z: f64, c: [f64; 4], r: f64, d: f64) -> f64 {
 /// Presses the snow at `feet` (x, top of the snow, z), a body `width` wide moving along
 /// (`fx`, `fz`). `top` gives a block's snow top (its block y plus its height), None for a block
 /// that is not snow. Returns whether anything changed.
+static SNOW_DEPTH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3F80_0000);
+
+/// How deep the trails are, of the most a foot sinks (the Snow page's Trail Depth).
+pub fn set_snow_depth(k: f32) {
+    SNOW_DEPTH.store(k.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn snow_press(feet: [f64; 3], width: f64, dir: [f64; 2], top: impl Fn(i32, i32, i32) -> Option<f64>) -> bool {
     let surface = feet[1];
     let by = (surface - 1e-3).floor() as i32;
@@ -694,7 +776,7 @@ pub fn snow_press(feet: [f64; 3], width: f64, dir: [f64; 2], top: impl Fn(i32, i
     // As deep as a foot sinks in vanilla: a layer of snow stands an eighth of a block above what
     // the feet stand on (the thinnest layer: down to almost the ground).
     let deepest = (height - 1.0 / 32.0).min(0.125);
-    let depth = deepest;
+    let depth = deepest * f64::from(f32::from_bits(SNOW_DEPTH.load(std::sync::atomic::Ordering::Relaxed))).clamp(0.05, 1.0);
     if depth <= 0.005 {
         return false;
     }
@@ -931,7 +1013,7 @@ pub fn catch_particle(block: Option<&(String, u32)>, item: Option<&Vec<String>>,
         SRC_EAT => mask & 4 != 0,
         SRC_ITEM_BREAK => mask & 8 != 0,
         SRC_KEEP => false,
-        _ => mask & 16 != 0 && block.is_some(),
+        _ => (mask & 16 != 0 && block.is_some()) || (mask & 32 != 0 && block.is_none() && item.is_some_and(|l| l.iter().any(|n| thrown(n)))),
     };
     if !wanted {
         return false;
@@ -947,6 +1029,12 @@ pub fn catch_particle(block: Option<&(String, u32)>, item: Option<&Vec<String>>,
     }
     q.push(ParticleBit { sprite, tint, at, v });
     true
+}
+
+/// A thrown item's sprite (a snowball or an egg breaking where it hit).
+fn thrown(sprite: &str) -> bool {
+    let n = sprite.rsplit('/').next().unwrap_or(sprite);
+    n == "snowball" || n == "egg" || n == "blue_egg" || n == "brown_egg"
 }
 
 /// The pieces waiting to be made.

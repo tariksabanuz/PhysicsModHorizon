@@ -5,6 +5,23 @@
 fn horizon_physics_builtin(game: &mut crate::game::Game<'_>) {
     use horizon_client::native_horizon_physics as hp;
     use horizon_client_render::native_horizon_physics_sway as sway;
+    // The pieces' landing sounds, and the wind's (out under the sky).
+    for (event, at, volume, pitch) in hp::take_sounds() {
+        game.audio.play(event, Some(at), volume, pitch);
+    }
+    if let Some(p) = game.player.as_ref() {
+        let eye = [p.position.x.floor() as i32, (p.position.y + 1.6).floor() as i32, p.position.z.floor() as i32];
+        let outdoors = (game.world.light(eye[0], eye[1], eye[2]) >> 4) >= 12;
+        let at = [p.position.x, p.position.y + 1.6, p.position.z];
+        if let Some((volume, pitch)) = hp::wind_sound(outdoors) {
+            game.audio.play("minecraft:item.elytra.flying", Some(at), volume, pitch);
+        }
+    }
+    // Collapses that waited their ticks fall now.
+    for pos in hp::due_collapses() {
+        hp::set_collapse_replay(pos);
+        let _ = game.break_block(pos);
+    }
     // The sections where the snow was pressed are meshed again.
     let sections = game.world.layout().height() / 16;
     for k in sway::snow_take_dirty() {
@@ -24,7 +41,7 @@ fn horizon_physics_builtin(game: &mut crate::game::Game<'_>) {
         hp::load(crate::game::Game::native_config_dir().ok());
     }
     let st = hp::settings();
-    let wanted = game.native_on(hp::ID) && (st.waves || st.plants);
+    let wanted = game.native_on(hp::ID) && (st.waves || st.plants || st.sway_leaves || st.sway_vines || st.sway_water);
     if !wanted {
         if hp::builtin_running() {
             hp::set_builtin_running(false);

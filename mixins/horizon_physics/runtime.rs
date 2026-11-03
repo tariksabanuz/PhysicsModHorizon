@@ -13,13 +13,13 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use crate::mesher::Vertex;
 
 pub const ID: &str = "horizon_physics";
 pub const NAME: &str = "Horizon Physics";
-pub const VERSION: &str = "0.11.0";
+pub const VERSION: &str = "0.12.0";
 pub const DESCRIPTION: &str =
     "By tariksabanuz. Blocks crumble and blow apart, ragdolls, items, smoke, ropes, capes, liquids, waves and swaying plants.";
 
@@ -98,6 +98,76 @@ pub struct Settings {
     pub joint_blood: f32,
     /// Ragdolls at most at once (the oldest go first).
     pub ragdoll_limit: u32,
+    /// How long a broken block's pieces stay (tens of seconds).
+    pub block_life: f32,
+    /// How much longer some of them stay (seconds).
+    pub block_var: f32,
+    /// How far from the camera a broken block still falls apart (blocks).
+    pub activation: f32,
+    /// How big the pieces are (bigger: fewer).
+    pub obj_scale: f32,
+    /// How far away capes are still cloth (blocks).
+    pub cape_range: f32,
+    /// No cape while a chest piece is worn.
+    pub hide_cape: bool,
+    /// How loud the pieces land.
+    pub impact_volume: f32,
+    /// How loud the wind blows.
+    pub wind_volume: f32,
+    /// The wind pushes smoke, capes, ropes and plants.
+    pub wind_forces: bool,
+    /// Rain splashes (and thunder's extra) a frame.
+    pub rain_amount: u32,
+    pub thunder_amount: u32,
+    /// The wind's strength in clear weather, rain and thunder.
+    pub wind_clear: f32,
+    pub wind_rain: f32,
+    pub wind_thunder: f32,
+    /// How opaque the rain, snow and dust particles are.
+    pub op_rain: f32,
+    pub op_snow: f32,
+    pub op_dust: f32,
+    /// A collapse drops what the blocks drop (in survival).
+    pub collapse_drops: bool,
+    /// Ticks before what lost its support falls.
+    pub collapse_ticks: u32,
+    /// Blocks at most that one break can bring down.
+    pub collapse_limit: u32,
+    /// How high the waves are.
+    pub wave_height: f32,
+    /// Boats ride the waves.
+    pub boats: bool,
+    /// Froth on the crests.
+    pub foam: bool,
+    /// What sways: leaves, vines, water plants (and `plants`: grass, flowers, crops).
+    pub sway_leaves: bool,
+    pub sway_vines: bool,
+    pub sway_water: bool,
+    /// How far they sway.
+    pub sway_strength: f32,
+    /// Snowballs and eggs shatter into pieces where they hit.
+    pub projectiles: bool,
+    /// How many droplets poured water and lava make.
+    pub liquid_amount: f32,
+    /// Falling into water splashes.
+    pub splashes: bool,
+    /// Mobs leave trails in snow too.
+    pub mob_trails: bool,
+    /// How deep a trail is (of the eighth of a block feet sink).
+    pub snow_depth: f32,
+    /// Steps kick up powder.
+    pub snow_powder: bool,
+    /// Fires throw glowing embers.
+    pub embers: bool,
+    /// How much smoke, and how thick.
+    pub smoke_amount: f32,
+    pub smoke_opacity: f32,
+    /// The game's own smoke is left out where the mod makes its own.
+    pub vanilla_smoke: bool,
+    /// The despawn animations: what each slot does, and which slots are in the list (the first
+    /// seven are the mod's own; the rest are made with Create Animation). `anim` is the one used.
+    pub anims: [AnimDef; ANIM_SLOTS],
+    pub anim_used: u16,
 }
 
 impl Default for Settings {
@@ -140,6 +210,45 @@ impl Default for Settings {
             joint_force: 1.0,
             joint_blood: 1.0,
             ragdoll_limit: 16,
+            block_life: 4.0,
+            block_var: 3.0,
+            activation: 96.0,
+            obj_scale: 1.0,
+            cape_range: 48.0,
+            hide_cape: false,
+            impact_volume: 1.0,
+            wind_volume: 1.0,
+            wind_forces: true,
+            rain_amount: 5,
+            thunder_amount: 2,
+            wind_clear: 0.1,
+            wind_rain: 1.0,
+            wind_thunder: 1.4,
+            op_rain: 1.0,
+            op_snow: 1.0,
+            op_dust: 1.0,
+            collapse_drops: true,
+            collapse_ticks: 10,
+            collapse_limit: 100,
+            wave_height: 1.0,
+            boats: true,
+            foam: true,
+            sway_leaves: true,
+            sway_vines: true,
+            sway_water: true,
+            sway_strength: 1.0,
+            projectiles: true,
+            liquid_amount: 1.0,
+            splashes: true,
+            mob_trails: true,
+            snow_depth: 1.0,
+            snow_powder: true,
+            embers: true,
+            smoke_amount: 1.0,
+            smoke_opacity: 1.0,
+            vanilla_smoke: true,
+            anims: std::array::from_fn(anim_default),
+            anim_used: (1 << BUILTIN_ANIMS.len()) - 1,
         }
     }
 }
@@ -154,6 +263,93 @@ const WIND: [(&str, f64); 3] = [("Calm", 0.0), ("Breeze", 1.0), ("Strong", 2.4)]
 /// Earth's pull on the pieces, in blocks per second squared. Real gravity (9.81) looks slow at
 /// the scale of blocks; twice that reads as a real fall.
 const EARTH: f64 = 20.0;
+
+/// A despawn animation: how the pieces move as their time runs out (`ANIM_MOTIONS`), what they
+/// give off when they are gone (`ANIM_PARTICLES`), over how many seconds, and how many puffs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AnimDef {
+    pub motion: u8,
+    pub particle: u8,
+    pub duration: f32,
+    pub amount: u8,
+}
+
+pub const ANIM_SLOTS: usize = 12;
+pub const ANIM_MOTIONS: [&str; 5] = ["shrink", "sink", "rise", "bounce", "none"];
+pub const ANIM_PARTICLES: [&str; 6] = ["none", "portal", "splash", "smoke", "poof", "explosion"];
+/// The mod's own animations (the first slots).
+pub const BUILTIN_ANIMS: [(&str, AnimDef); 7] = [
+    ("default", AnimDef { motion: 0, particle: 0, duration: 0.5, amount: 0 }),
+    ("portal", AnimDef { motion: 0, particle: 1, duration: 0.8, amount: 10 }),
+    ("splash", AnimDef { motion: 1, particle: 2, duration: 1.0, amount: 8 }),
+    ("vanish", AnimDef { motion: 0, particle: 0, duration: 0.12, amount: 0 }),
+    ("explosion", AnimDef { motion: 0, particle: 5, duration: 0.2, amount: 6 }),
+    ("poof", AnimDef { motion: 4, particle: 4, duration: 0.05, amount: 6 }),
+    ("bounce", AnimDef { motion: 3, particle: 0, duration: 1.2, amount: 0 }),
+];
+
+/// What slot `i` holds when the mod comes (a made one starts as a copy of `default`).
+pub fn anim_default(i: usize) -> AnimDef {
+    BUILTIN_ANIMS.get(i).map_or(BUILTIN_ANIMS[0].1, |b| b.1)
+}
+
+/// Slot `i`'s name in the list.
+pub fn anim_name(s: &Settings, i: usize) -> String {
+    let _ = s;
+    match BUILTIN_ANIMS.get(i) {
+        Some(b) => b.0.to_string(),
+        None => format!("custom {}", i + 1 - BUILTIN_ANIMS.len()),
+    }
+}
+
+/// The slots in the list, in order.
+pub fn anim_slots(s: &Settings) -> Vec<usize> {
+    (0..ANIM_SLOTS).filter(|i| s.anim_used & (1 << i) != 0).collect()
+}
+
+/// The slot after `cur` in the list (round to the first).
+pub fn next_anim(s: &Settings, cur: u8) -> u8 {
+    let list = anim_slots(s);
+    list.iter().copied().find(|&i| i > cur as usize).or(list.first().copied()).unwrap_or(0) as u8
+}
+
+/// The animation used now (the default one when its slot was removed).
+pub fn anim_now(s: &Settings) -> AnimDef {
+    let i = s.anim as usize % ANIM_SLOTS;
+    if s.anim_used & (1 << i) != 0 { s.anims[i] } else { BUILTIN_ANIMS[0].1 }
+}
+
+static ANIM_EDIT: AtomicUsize = AtomicUsize::new(0);
+
+/// The slot the animation editor shows.
+pub fn anim_edit() -> usize {
+    ANIM_EDIT.load(Ordering::Relaxed) % ANIM_SLOTS
+}
+
+pub fn set_anim_edit(i: usize) {
+    ANIM_EDIT.store(i % ANIM_SLOTS, Ordering::Relaxed);
+}
+
+/// The weather now: rain and thunder, 0 to 1 (the world hook sets them each frame).
+static RAIN: AtomicU32 = AtomicU32::new(0);
+static THUNDER: AtomicU32 = AtomicU32::new(0);
+
+pub fn set_weather(rain: f32, thunder: f32) {
+    RAIN.store(rain.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+    THUNDER.store(thunder.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+}
+
+pub fn weather_levels() -> (f32, f32) {
+    (f32::from_bits(RAIN.load(Ordering::Relaxed)), f32::from_bits(THUNDER.load(Ordering::Relaxed)))
+}
+
+fn on_upper(b: bool) -> &'static str {
+    if b { "ON" } else { "OFF" }
+}
+
+fn decimal(v: f32) -> String {
+    format!("{v:.2}").replace('.', ",")
+}
 
 fn on_off(b: bool) -> &'static str {
     if b { "On" } else { "Off" }
@@ -236,6 +432,47 @@ impl Settings {
             self.joint_blood,
             self.ragdoll_limit
         ));
+        t.push_str(&format!("block_life={}\n", self.block_life));
+        t.push_str(&format!("block_var={}\n", self.block_var));
+        t.push_str(&format!("activation={}\n", self.activation));
+        t.push_str(&format!("obj_scale={}\n", self.obj_scale));
+        t.push_str(&format!("cape_range={}\n", self.cape_range));
+        t.push_str(&format!("hide_cape={}\n", self.hide_cape as u8));
+        t.push_str(&format!("impact_volume={}\n", self.impact_volume));
+        t.push_str(&format!("wind_volume={}\n", self.wind_volume));
+        t.push_str(&format!("wind_forces={}\n", self.wind_forces as u8));
+        t.push_str(&format!("rain_amount={}\n", self.rain_amount));
+        t.push_str(&format!("thunder_amount={}\n", self.thunder_amount));
+        t.push_str(&format!("wind_clear={}\n", self.wind_clear));
+        t.push_str(&format!("wind_rain={}\n", self.wind_rain));
+        t.push_str(&format!("wind_thunder={}\n", self.wind_thunder));
+        t.push_str(&format!("op_rain={}\n", self.op_rain));
+        t.push_str(&format!("op_snow={}\n", self.op_snow));
+        t.push_str(&format!("op_dust={}\n", self.op_dust));
+        t.push_str(&format!("collapse_drops={}\n", self.collapse_drops as u8));
+        t.push_str(&format!("collapse_ticks={}\n", self.collapse_ticks));
+        t.push_str(&format!("collapse_limit={}\n", self.collapse_limit));
+        t.push_str(&format!("wave_height={}\n", self.wave_height));
+        t.push_str(&format!("boats={}\n", self.boats as u8));
+        t.push_str(&format!("foam={}\n", self.foam as u8));
+        t.push_str(&format!("sway_leaves={}\n", self.sway_leaves as u8));
+        t.push_str(&format!("sway_vines={}\n", self.sway_vines as u8));
+        t.push_str(&format!("sway_water={}\n", self.sway_water as u8));
+        t.push_str(&format!("sway_strength={}\n", self.sway_strength));
+        t.push_str(&format!("projectiles={}\n", self.projectiles as u8));
+        t.push_str(&format!("liquid_amount={}\n", self.liquid_amount));
+        t.push_str(&format!("splashes={}\n", self.splashes as u8));
+        t.push_str(&format!("mob_trails={}\n", self.mob_trails as u8));
+        t.push_str(&format!("snow_depth={}\n", self.snow_depth));
+        t.push_str(&format!("snow_powder={}\n", self.snow_powder as u8));
+        t.push_str(&format!("embers={}\n", self.embers as u8));
+        t.push_str(&format!("smoke_amount={}\n", self.smoke_amount));
+        t.push_str(&format!("smoke_opacity={}\n", self.smoke_opacity));
+        t.push_str(&format!("vanilla_smoke={}\n", self.vanilla_smoke as u8));
+        t.push_str(&format!("anim_used={}\n", self.anim_used));
+        for (i, a) in self.anims.iter().enumerate() {
+            t.push_str(&format!("anim{i}={},{},{},{}\n", a.motion, a.particle, a.duration, a.amount));
+        }
         t
     }
 
@@ -268,6 +505,18 @@ impl Settings {
         let mut s = Self::default();
         for line in text.lines() {
             let Some((k, v)) = line.split_once('=') else { continue };
+            if let Some(i) = k.trim().strip_prefix("anim").and_then(|i| i.parse::<usize>().ok()) {
+                let n: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                if i < ANIM_SLOTS && n.len() == 4 {
+                    s.anims[i] = AnimDef {
+                        motion: (n[0] as u8) % ANIM_MOTIONS.len() as u8,
+                        particle: (n[1] as u8) % ANIM_PARTICLES.len() as u8,
+                        duration: n[2].clamp(0.05, 3.0),
+                        amount: n[3].clamp(0.0, 32.0) as u8,
+                    };
+                }
+                continue;
+            }
             if let Ok(f) = v.trim().parse::<f32>() {
                 let on = f != 0.0;
                 match k.trim() {
@@ -285,10 +534,48 @@ impl Settings {
                     "particle_var" => s.particle_var = f.clamp(0.0, 10.0),
                     "mob_life" => s.mob_life = f.clamp(0.0, 30.0),
                     "mob_var" => s.mob_var = f.clamp(0.0, 10.0),
-                    "anim" => s.anim = (f as u8) % 3,
+                    "anim" => s.anim = (f as u8) % ANIM_SLOTS as u8,
                     "joint_force" => s.joint_force = f.clamp(0.0, 10.0),
                     "joint_blood" => s.joint_blood = f.clamp(0.0, 5.0),
                     "ragdoll_limit" => s.ragdoll_limit = (f as u32).clamp(1, 64),
+                    "block_life" => s.block_life = f.clamp(0.0, 30.0),
+                    "block_var" => s.block_var = f.clamp(0.0, 10.0),
+                    "activation" => s.activation = f.clamp(8.0, 256.0),
+                    "obj_scale" => s.obj_scale = f.clamp(0.25, 3.0),
+                    "cape_range" => s.cape_range = f.clamp(4.0, 128.0),
+                    "hide_cape" => s.hide_cape = on,
+                    "impact_volume" => s.impact_volume = f.clamp(0.0, 2.0),
+                    "wind_volume" => s.wind_volume = f.clamp(0.0, 2.0),
+                    "wind_forces" => s.wind_forces = on,
+                    "rain_amount" => s.rain_amount = (f as u32).clamp(0, 20),
+                    "thunder_amount" => s.thunder_amount = (f as u32).clamp(0, 20),
+                    "wind_clear" => s.wind_clear = f.clamp(0.0, 3.0),
+                    "wind_rain" => s.wind_rain = f.clamp(0.0, 3.0),
+                    "wind_thunder" => s.wind_thunder = f.clamp(0.0, 3.0),
+                    "op_rain" => s.op_rain = f.clamp(0.0, 1.0),
+                    "op_snow" => s.op_snow = f.clamp(0.0, 1.0),
+                    "op_dust" => s.op_dust = f.clamp(0.0, 1.0),
+                    "collapse_drops" => s.collapse_drops = on,
+                    "collapse_ticks" => s.collapse_ticks = (f as u32).clamp(0, 100),
+                    "collapse_limit" => s.collapse_limit = (f as u32).clamp(10, 1000),
+                    "wave_height" => s.wave_height = f.clamp(0.0, 3.0),
+                    "boats" => s.boats = on,
+                    "foam" => s.foam = on,
+                    "sway_leaves" => s.sway_leaves = on,
+                    "sway_vines" => s.sway_vines = on,
+                    "sway_water" => s.sway_water = on,
+                    "sway_strength" => s.sway_strength = f.clamp(0.0, 3.0),
+                    "projectiles" => s.projectiles = on,
+                    "liquid_amount" => s.liquid_amount = f.clamp(0.0, 3.0),
+                    "splashes" => s.splashes = on,
+                    "mob_trails" => s.mob_trails = on,
+                    "snow_depth" => s.snow_depth = f.clamp(0.1, 1.0),
+                    "snow_powder" => s.snow_powder = on,
+                    "embers" => s.embers = on,
+                    "smoke_amount" => s.smoke_amount = f.clamp(0.0, 3.0),
+                    "smoke_opacity" => s.smoke_opacity = f.clamp(0.1, 2.0),
+                    "vanilla_smoke" => s.vanilla_smoke = on,
+                    "anim_used" => s.anim_used = (f as u16) & ((1 << ANIM_SLOTS) - 1),
                     _ => {}
                 }
             }
@@ -323,16 +610,28 @@ impl Settings {
         EARTH * GRAVITY[self.gravity as usize % 5].1
     }
 
+    /// The wind's strength now: the Weather page's strength for clear weather, rain and
+    /// thunder, by how much it rains and thunders (none with Wind Forces off).
     pub fn wind(&self) -> f64 {
-        WIND[self.wind as usize % 3].1
+        if !self.wind_forces {
+            return 0.0;
+        }
+        let (rain, thunder) = weather_levels();
+        let w = self.wind_clear + (self.wind_rain - self.wind_clear) * rain + (self.wind_thunder - self.wind_rain) * thunder;
+        f64::from(w.max(0.0))
     }
 
+    /// Pieces a broken block makes: bigger pieces, fewer of them.
     pub fn pieces_per_block(&self) -> usize {
-        PIECES[self.pieces as usize % 3].1
+        let _ = PIECES;
+        ((8.0 / f64::from(self.obj_scale.max(0.1)).powf(1.5)).round() as usize).clamp(1, 48)
     }
 
+    /// How long a broken block's pieces stay at least (seconds); some stay up to `block_var`
+    /// seconds longer.
     pub fn lifetime(&self) -> f64 {
-        LIFETIME[self.lifetime as usize % 4].1
+        let _ = LIFETIME;
+        (f64::from(self.block_life) * 10.0).max(0.5)
     }
 }
 
@@ -779,6 +1078,8 @@ pub struct Body {
     inv_inertia: V3,
     pub verts: Vec<MeshVertex>,
     contacts: Vec<Contact>,
+    /// The hardest it hit anything this step (blocks a second into the surface).
+    hit: f64,
 }
 
 impl Body {
@@ -804,6 +1105,7 @@ impl Body {
             inv_inertia: v3(1.0 / inertia.x, 1.0 / inertia.y, 1.0 / inertia.z),
             verts,
             contacts: Vec::new(),
+            hit: 0.0,
         }
     }
 
@@ -895,6 +1197,8 @@ pub struct Object {
     check: f64,
     /// A dead mob (counted against the ragdoll limit).
     pub mob: bool,
+    /// Seconds before it may make another landing sound.
+    quiet: f64,
 }
 
 const SUBSTEPS: usize = 4;
@@ -914,8 +1218,13 @@ pub struct Physics {
     pub joint_break: Option<f64>,
     /// Where joints tore this step (drained by the caller, for the red mist).
     pub torn: Vec<V3>,
-    /// How pieces go at the end: 0 shrink, 1 sink, 2 just go.
-    pub anim: u8,
+    /// How pieces go at the end.
+    pub anim: AnimDef,
+    /// Where pieces went this step (their centre, and how big they were): drained by the
+    /// caller, for the animation's puffs.
+    pub gone: Vec<(V3, f64)>,
+    /// Pieces that landed hard this step: where, how fast, and whether a mob's.
+    pub impacts: Vec<(V3, f64, bool)>,
     /// Ragdolls (dead mobs) at most at once.
     pub ragdoll_limit: usize,
 }
@@ -930,7 +1239,9 @@ impl Default for Physics {
             max_bodies: MAX_BODIES,
             joint_break: None,
             torn: Vec::new(),
-            anim: 0,
+            anim: BUILTIN_ANIMS[0].1,
+            gone: Vec::new(),
+            impacts: Vec::new(),
             ragdoll_limit: 16,
         }
     }
@@ -984,6 +1295,7 @@ impl Physics {
             sleeping: false,
             check: 0.0,
             mob: false,
+            quiet: 0.0,
         });
     }
 
@@ -1031,8 +1343,27 @@ impl Physics {
                 o.ignore = None;
             }
         }
+        for b in &mut self.bodies {
+            b.hit = 0.0;
+        }
         for _ in 0..SUBSTEPS {
             self.substep(h, gravity, world, &owner);
+        }
+        // Landings: an object that hit something hard makes a sound (then keeps quiet a moment).
+        for o in &mut self.objects {
+            o.quiet -= dt;
+            if o.sleeping || o.quiet > 0.0 {
+                continue;
+            }
+            let bodies = &self.bodies[o.first..o.first + o.count];
+            if let Some(b) = bodies.iter().max_by(|a, b| a.hit.total_cmp(&b.hit))
+                && b.hit > 2.5
+                && b.half.x + b.half.y + b.half.z > 0.09
+                && self.impacts.len() < 16
+            {
+                self.impacts.push((b.x, b.hit, o.mob));
+                o.quiet = 0.3;
+            }
         }
         self.after_step(dt, world);
     }
@@ -1106,6 +1437,7 @@ impl Physics {
                     if slide.len() < STATIC_FRICTION * depth {
                         correct(b, None, -slide, r);
                     }
+                    b.hit = b.hit.max(-vn_before);
                     b.contacts.push(Contact { local: c, n, lambda, vn_before });
                 }
             }
@@ -1233,6 +1565,13 @@ impl Physics {
             o.age += dt;
             if o.age > o.life {
                 keep[oi] = false;
+                if self.gone.len() < 64 {
+                    let bodies = &self.bodies[o.first..o.first + o.count];
+                    let n = bodies.len().max(1) as f64;
+                    let c = bodies.iter().fold(V3::default(), |a, b| a + b.x) * (1.0 / n);
+                    let size = bodies.iter().map(|b| (b.half.x + b.half.y + b.half.z) / 1.5).sum::<f64>().min(2.0);
+                    self.gone.push((c, size));
+                }
                 continue;
             }
             let bodies = &mut self.bodies[o.first..o.first + o.count];
@@ -1284,14 +1623,11 @@ impl Physics {
     /// Draws every piece, camera-relative, into `out`.
     pub fn emit(&self, camera: V3, world: &dyn World, out: &mut Vec<Vertex>) {
         for o in &self.objects {
-            // The end: shrink away over the last half second, or sink into the ground over the
-            // last second, or just go.
-            let left = o.life - o.age;
-            let s = if self.anim == 0 { (left / 0.5).clamp(0.0, 1.0) as f32 } else { 1.0 };
-            let sink = if self.anim == 1 { (1.0 - left).clamp(0.0, 1.0) * 0.6 } else { 0.0 };
+            // The end, over the animation's last seconds: k runs from 1 down to 0.
+            let (s, lift) = despawn_pose(&self.anim, o.life - o.age);
             for b in &self.bodies[o.first..o.first + o.count] {
                 let light = world.light(floor(b.x.x), floor(b.x.y), floor(b.x.z));
-                let at = b.x - camera - v3(0.0, sink, 0.0);
+                let at = b.x - camera + v3(0.0, lift, 0.0);
                 for v in &b.verts {
                     let lp = v3(
                         f64::from(v.pos[0] * s),
@@ -1317,6 +1653,28 @@ impl Physics {
 
     fn rng(&mut self) -> &mut Rng {
         &mut self.rng
+    }
+}
+
+/// How a piece looks with `left` seconds to go under despawn animation `a`: its scale, and how
+/// far it is moved up (down when negative).
+pub fn despawn_pose(a: &AnimDef, left: f64) -> (f32, f64) {
+    let d = f64::from(a.duration).max(0.01);
+    let k = (left / d).clamp(0.0, 1.0);
+    let done = 1.0 - k;
+    match a.motion {
+        // Shrink away.
+        0 => (k as f32, 0.0),
+        // Sink into the ground.
+        1 => (1.0, -done * 0.6),
+        // Float up as it shrinks.
+        2 => (k.sqrt() as f32, done * done * 0.9),
+        // Hop up a few times, smaller each time, and shrink on the last.
+        3 => {
+            let hop = (done * std::f64::consts::PI * 3.0).sin().abs() * 0.35 * k;
+            ((k / 0.25).min(1.0) as f32, hop)
+        }
+        _ => (1.0, 0.0),
     }
 }
 
@@ -1363,7 +1721,7 @@ pub fn split_box(b: [f64; 6], n: usize, rng: &mut Rng) -> Vec<[f64; 6]> {
 
 /// The six faces of box `b` (block space, block at `origin`), textured with the part of the
 /// sprite `uv` that the box covers, so the pieces fit back together into the block.
-fn box_mesh(b: [f64; 6], uv: [f32; 4], color: u32) -> (V3, V3, Vec<MeshVertex>) {
+pub fn box_mesh(b: [f64; 6], uv: [f32; 4], color: u32) -> (V3, V3, Vec<MeshVertex>) {
     let lo = v3(b[0], b[1], b[2]);
     let hi = v3(b[3], b[4], b[5]);
     let c = (lo + hi) * 0.5;
@@ -1501,7 +1859,7 @@ impl Physics {
                 bodies.push(body);
             }
         }
-        let life = s.lifetime() + self.rng.range(0.0, 2.0);
+        let life = s.lifetime() + self.rng.range(0.0, f64::from(s.block_var).max(0.0));
         self.add(bodies, Vec::new(), life, Some(pos));
     }
 
@@ -1539,7 +1897,7 @@ impl Physics {
                 bodies.push(body);
             }
         }
-        let life = s.lifetime() + self.rng.range(0.0, 2.0);
+        let life = s.lifetime() + self.rng.range(0.0, f64::from(s.block_var).max(0.0));
         self.add(bodies, Vec::new(), life, None);
     }
 }
@@ -1946,7 +2304,7 @@ pub fn particle_catch() -> u8 {
     if !ENABLED.load(Ordering::Relaxed) {
         return 0;
     }
-    u8::from(st.crack) | u8::from(st.sprint) << 1 | u8::from(st.eat) << 2 | u8::from(st.item_break) << 3 | u8::from(st.block_particles) << 4
+    u8::from(st.crack) | u8::from(st.sprint) << 1 | u8::from(st.eat) << 2 | u8::from(st.item_break) << 3 | u8::from(st.block_particles) << 4 | u8::from(st.projectiles) << 5
 }
 
 /// A particle as a small physics piece (`uv` its sprite in the atlas), `v` in blocks a tick.
@@ -1961,7 +2319,8 @@ pub fn spawn_bit(at: [f64; 3], v: [f64; 3], uv: [f32; 4], tint: u32) {
 
 /// Rain landing on the ground at `at`: a few drops thrown up.
 pub fn rain_splash(at: [f64; 3]) {
-    if !ENABLED.load(Ordering::Relaxed) || !settings().weather {
+    let st = settings();
+    if !ENABLED.load(Ordering::Relaxed) || !st.weather || st.op_rain <= 0.0 {
         return;
     }
     with(|s| {
@@ -1970,10 +2329,49 @@ pub fn rain_splash(at: [f64; 3]) {
             let rng = &mut s.env.rng;
             let r = rng.unit();
             let v = v3(r.x * 0.8, rng.range(1.0, 2.2), r.z * 0.8);
-            let puff = Puff::new(FxKind::Dust, x, v, rng.range(0.012, 0.022), rng.range(0.22, 0.34), [0.62, 0.72, 0.95], [0.75, 0.82, 0.97], rng);
+            let mut puff = Puff::new(FxKind::Dust, x, v, rng.range(0.012, 0.022), rng.range(0.22, 0.34), [0.62, 0.72, 0.95], [0.75, 0.82, 0.97], rng);
+            puff.alpha *= f64::from(st.op_rain);
             s.env.puff(puff);
         }
     });
+}
+
+/// A snowflake drifting down from `at` (the weather hook puts them above the ground around the
+/// camera where it snows).
+pub fn snowflake(at: [f64; 3]) {
+    let st = settings();
+    if !ENABLED.load(Ordering::Relaxed) || !st.weather || st.op_snow <= 0.0 {
+        return;
+    }
+    with(|s| {
+        let rng = &mut s.env.rng;
+        let v = v3(rng.range(-0.3, 0.3), -rng.range(0.6, 1.0), rng.range(-0.3, 0.3));
+        let mut puff = Puff::new(FxKind::Dust, v3(at[0], at[1], at[2]), v, rng.range(0.02, 0.035), rng.range(4.0, 6.0), [0.97, 0.98, 1.0], [0.93, 0.95, 1.0], rng);
+        puff.alpha *= f64::from(st.op_snow);
+        s.env.puff(puff);
+    });
+}
+
+/// Sand blown off the ground at `at` by the wind (deserts and beaches in wind).
+pub fn sand_dust(at: [f64; 3], red: bool) {
+    let st = settings();
+    if !ENABLED.load(Ordering::Relaxed) || !st.weather || st.op_dust <= 0.0 {
+        return;
+    }
+    let w = wind_at(with(|s| s.env.clock), st.wind());
+    with(|s| {
+        let rng = &mut s.env.rng;
+        let v = w * rng.range(0.6, 1.1) + v3(0.0, rng.range(0.6, 1.4), 0.0);
+        let (a, b) = if red { ([0.72, 0.42, 0.22], [0.8, 0.55, 0.35]) } else { ([0.86, 0.8, 0.6], [0.92, 0.88, 0.72]) };
+        let mut puff = Puff::new(FxKind::Dust, v3(at[0], at[1] + 0.05, at[2]), v, rng.range(0.03, 0.06), rng.range(1.2, 2.2), a, b, rng);
+        puff.alpha *= 0.7 * f64::from(st.op_dust);
+        s.env.puff(puff);
+    });
+}
+
+/// The wind's strength now (0 with Wind Forces off).
+pub fn wind_now() -> f64 {
+    settings().wind()
 }
 
 pub fn weather_on() -> bool {
@@ -1986,11 +2384,54 @@ pub fn spawn_block(pos: [i32; 3], boxes: &[[f64; 6]], uv: [f32; 4], tint: u32) {
     if !st.blocks {
         return;
     }
-    with(|s| s.physics.spawn_block(pos, boxes, uv, tint, &st));
+    with(|s| {
+        let c = v3(f64::from(pos[0]) + 0.5, f64::from(pos[1]) + 0.5, f64::from(pos[2]) + 0.5);
+        if (c - s.camera).len() > f64::from(st.activation) {
+            return;
+        }
+        s.physics.spawn_block(pos, boxes, uv, tint, &st);
+    });
 }
 
 /// Set while the collapse hook breaks blocks itself (its own nested call).
 pub static COLLAPSE: Guard = Guard::new();
+
+/// Collapses waiting their ticks (Collapse Speed): the broken block, and when it falls.
+static WAITING: Mutex<Vec<([i32; 3], std::time::Instant)>> = Mutex::new(Vec::new());
+static REPLAYING: Mutex<Option<[i32; 3]>> = Mutex::new(None);
+
+/// What the block at `pos` held up falls in `seconds`.
+pub fn queue_collapse(pos: [i32; 3], seconds: f64) {
+    let mut w = WAITING.lock().unwrap_or_else(|e| e.into_inner());
+    if w.len() < 64 && !w.iter().any(|(p, _)| *p == pos) {
+        w.push((pos, std::time::Instant::now() + std::time::Duration::from_secs_f64(seconds.max(0.0))));
+    }
+}
+
+/// The collapses whose time came.
+pub fn due_collapses() -> Vec<[i32; 3]> {
+    let now = std::time::Instant::now();
+    let mut w = WAITING.lock().unwrap_or_else(|e| e.into_inner());
+    let due: Vec<[i32; 3]> = w.iter().filter(|(_, t)| *t <= now).map(|(p, _)| *p).collect();
+    w.retain(|(_, t)| *t > now);
+    due
+}
+
+/// The collapse hook is called for `pos` to let its waiting collapse fall.
+pub fn set_collapse_replay(pos: [i32; 3]) {
+    *REPLAYING.lock().unwrap_or_else(|e| e.into_inner()) = Some(pos);
+}
+
+/// True once when the call for `pos` is a waiting collapse's.
+pub fn take_collapse_replay(pos: [i32; 3]) -> bool {
+    let mut g = REPLAYING.lock().unwrap_or_else(|e| e.into_inner());
+    if *g == Some(pos) {
+        *g = None;
+        true
+    } else {
+        false
+    }
+}
 static SILENT: Mutex<Vec<[i32; 3]>> = Mutex::new(Vec::new());
 
 /// Blocks the collapse takes away: their breaking makes no particles (they fall whole instead).
@@ -2139,7 +2580,7 @@ pub fn frame(dim: u8, camera: [f64; 3], white: [f32; 4], world: &dyn World, out:
         }
         s.physics.max_bodies = st.max_objects as usize;
         s.physics.joint_break = (st.joint_force < 9.99).then(|| 0.08 + 0.3 * f64::from(st.joint_force));
-        s.physics.anim = st.anim;
+        s.physics.anim = anim_now(&st);
         s.physics.ragdoll_limit = st.ragdoll_limit as usize;
         s.physics.step(dt * f64::from(st.sim_speed), st.gravity(), world);
         // A torn joint lets out a little red mist.
@@ -2152,10 +2593,142 @@ pub fn frame(dim: u8, camera: [f64; 3], white: [f32; 4], world: &dyn World, out:
                 s.env.puff(puff);
             }
         }
+        // What the despawn animation gives off where pieces went.
+        let anim = s.physics.anim;
+        for (at, size) in std::mem::take(&mut s.physics.gone) {
+            s.env.despawn_puffs(&anim, at, size);
+        }
+        // Landings, for the game to play (the builtin hook has the audio).
+        let impacts = std::mem::take(&mut s.physics.impacts);
+        if st.impact_volume > 0.0 {
+            let mut q = SOUNDS.lock().unwrap_or_else(|e| e.into_inner());
+            for (at, speed, mob) in impacts.into_iter().take(3) {
+                if (at - cam).len() > 32.0 || q.len() >= 16 {
+                    continue;
+                }
+                let volume = st.impact_volume * ((speed - 2.5) / 8.0).clamp(0.08, 0.6) as f32;
+                let pitch = s.env.rng.range(0.8, 1.25) as f32;
+                let sound = if mob { "minecraft:entity.generic.small_fall" } else { "minecraft:block.stone.hit" };
+                q.push((sound, [at.x, at.y, at.z], volume, pitch));
+            }
+        }
         s.physics.emit(cam, world, out);
         s.env.step(s.last_dt, cam, frame, &st, world);
         s.env.emit(cam, white, world, out);
     });
+}
+
+/// Sounds waiting for the game: (event, position, volume, pitch).
+static SOUNDS: Mutex<Vec<(&'static str, [f64; 3], f32, f32)>> = Mutex::new(Vec::new());
+
+/// The sounds the pieces made since the last call.
+pub fn take_sounds() -> Vec<(&'static str, [f64; 3], f32, f32)> {
+    std::mem::take(&mut *SOUNDS.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+static WIND_NEXT: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+
+/// The wind's sound: every ten seconds or so, a gust (volume, pitch) while it blows and the
+/// player is out under the sky (`outdoors`). None when it is not time.
+pub fn wind_sound(outdoors: bool) -> Option<(f32, f32)> {
+    let st = settings();
+    if !ENABLED.load(Ordering::Relaxed) || st.wind_volume <= 0.0 || !outdoors {
+        return None;
+    }
+    let w = st.wind() as f32;
+    if w < 0.35 {
+        return None;
+    }
+    let now = std::time::Instant::now();
+    let mut g = WIND_NEXT.lock().unwrap_or_else(|e| e.into_inner());
+    if g.is_some_and(|t| now < t) {
+        return None;
+    }
+    let (wait, pitch) = with(|s| (s.env.rng.range(7.0, 13.0), s.env.rng.range(0.55, 0.75) as f32));
+    *g = Some(now + std::time::Duration::from_secs_f64(wait / f64::from(w.max(0.5))));
+    Some(((0.05 + 0.06 * w).min(0.25) * st.wind_volume, pitch))
+}
+
+static REPLAY: AtomicBool = AtomicBool::new(false);
+
+/// The Despawn Animation page's REPLAY: a few pieces fall in front of the player and go with
+/// the animation chosen.
+pub fn replay_anim() {
+    REPLAY.store(true, Ordering::Relaxed);
+}
+
+pub fn replay_wanted() -> bool {
+    REPLAY.load(Ordering::Relaxed)
+}
+
+/// Makes the replay's pieces: in front of the player at `eye`, facing `yaw`, of sprite `uv`.
+pub fn replay_at(eye: [f64; 3], yaw: f32, uv: [f32; 4]) {
+    if !REPLAY.swap(false, Ordering::Relaxed) || !ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    let st = settings();
+    let a = anim_now(&st);
+    with(|s| {
+        let r = f64::from(yaw).to_radians();
+        let ahead = v3(eye[0], eye[1], eye[2]) + v3(-r.sin(), 0.0, r.cos()) * 2.5;
+        let life = 1.0 + f64::from(a.duration);
+        for _ in 0..6 {
+            let rng = s.physics.rng();
+            let size = rng.range(0.15, 0.3);
+            let at = ahead + v3(rng.range(-0.5, 0.5), rng.range(-0.2, 0.4), rng.range(-0.5, 0.5));
+            let (_, h, verts) = box_mesh([0.0, 0.0, 0.0, size, size, size], uv, tint_color(0xFF_FFFF));
+            let mut body = Body::new(at, Quat::axis_angle(rng.unit(), rng.range(0.0, 3.0)), h, verts);
+            body.v = v3(rng.range(-0.6, 0.6), rng.range(0.5, 1.5), rng.range(-0.6, 0.6));
+            body.w = rng.unit() * rng.range(1.0, 5.0);
+            s.physics.add(vec![body], Vec::new(), life, None);
+        }
+    });
+}
+
+impl Env {
+    /// The puffs of despawn animation `a` where pieces `size` big went, at `at`.
+    pub fn despawn_puffs(&mut self, a: &AnimDef, at: V3, size: f64) {
+        let n = ((f64::from(a.amount) * (0.5 + size).min(1.5)).round() as usize).min(40);
+        for _ in 0..n {
+            let rng = &mut self.rng;
+            let r = rng.unit();
+            let x = at + r * (0.15 + size * 0.3);
+            match a.particle {
+                1 => {
+                    let v = r * rng.range(0.3, 0.9) + v3(0.0, rng.range(0.3, 1.0), 0.0);
+                    let p = Puff::new(FxKind::Ember, x, v, rng.range(0.02, 0.04), rng.range(0.6, 1.2), [0.75, 0.35, 1.0], [0.35, 0.08, 0.6], rng);
+                    self.puff(p);
+                }
+                2 => {
+                    let v = v3(r.x * rng.range(0.6, 1.6), rng.range(1.5, 3.0), r.z * rng.range(0.6, 1.6));
+                    let life = rng.range(0.8, 1.4);
+                    self.add_drop(x, v, false, life);
+                }
+                3 => {
+                    let v = r * 0.3 + v3(0.0, rng.range(0.4, 0.9), 0.0);
+                    let mut p = Puff::new(FxKind::Smoke, x, v, rng.range(0.12, 0.2), rng.range(1.2, 2.2), [0.3, 0.3, 0.3], [0.6, 0.6, 0.62], rng);
+                    p.alpha = 0.6;
+                    self.puff(p);
+                }
+                4 => {
+                    let v = r * rng.range(0.6, 1.4) + v3(0.0, 0.3, 0.0);
+                    let mut p = Puff::new(FxKind::Smoke, x, v, rng.range(0.07, 0.12), rng.range(0.4, 0.8), [0.96, 0.96, 0.96], [0.85, 0.85, 0.86], rng);
+                    p.alpha = 0.8;
+                    self.puff(p);
+                }
+                5 => {
+                    let v = r * rng.range(0.5, 1.5);
+                    let flame = Puff::new(FxKind::Flame, x, v, rng.range(0.12, 0.22), rng.range(0.25, 0.45), [1.0, 0.85, 0.4], [0.7, 0.2, 0.05], rng);
+                    let v = r * 0.4 + v3(0.0, 0.6, 0.0);
+                    let mut smoke = Puff::new(FxKind::Smoke, x, v, rng.range(0.15, 0.25), rng.range(1.0, 1.8), [0.2, 0.2, 0.2], [0.5, 0.5, 0.5], rng);
+                    smoke.alpha = 0.55;
+                    self.puff(flame);
+                    self.puff(smoke);
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2682,7 +3255,7 @@ impl Env {
             });
             let list: Vec<([i32; 3], u8)> = self.emitters.iter().map(|(p, k)| (*p, *k)).collect();
             for (p, kind) in list {
-                self.emit_fire(p, kind, dt);
+                self.emit_fire(p, kind, dt, st);
             }
         }
         // The smoke keeps apart from itself, so where it cannot rise it spreads.
@@ -2816,7 +3389,7 @@ impl Env {
     }
 
     /// A fire block of `kind` (`scan_found`) at `p` for `dt` seconds: its smoke and embers.
-    fn emit_fire(&mut self, p: [i32; 3], kind: u8, dt: f64) {
+    fn emit_fire(&mut self, p: [i32; 3], kind: u8, dt: f64, st: &Settings) {
         let base = v3(f64::from(p[0]), f64::from(p[1]), f64::from(p[2]));
         // Smoke a second, its size, life, colours and opacity; embers a second and their colour.
         let (rate, size, life, from, to, alpha, embers, ember) = match kind {
@@ -2837,7 +3410,9 @@ impl Env {
             let n = rate * dt;
             n.floor() as usize + usize::from(self.rng.next() < n.fract())
         };
-        let (smokes, sparks) = (count(rate), count(embers));
+        let embers = if st.embers { embers } else { 0.0 };
+        let (smokes, sparks) = (count(rate * f64::from(st.smoke_amount)), count(embers));
+        let alpha = (alpha * f64::from(st.smoke_opacity)).min(1.0);
         for _ in 0..smokes {
             let rng = &mut self.rng;
             let x = base + v3(rng.range(0.3, 0.7), y + rng.range(0.0, 0.2), rng.range(0.3, 0.7));
@@ -3299,7 +3874,7 @@ pub fn explosions_on() -> bool {
 
 /// Whether vanilla's own smoke over fire and campfires gives way to the mod's.
 pub fn replaces_vanilla_smoke() -> bool {
-    smoke_on()
+    smoke_on() && settings().vanilla_smoke
 }
 
 pub fn smoke_on() -> bool {
@@ -3310,12 +3885,26 @@ pub fn snow_on() -> bool {
     part_on(|s| s.snow)
 }
 
+/// Whether the mobs leave trails in the snow too, and how deep a trail is (0 to 1 of the most).
+pub fn mob_trails_on() -> bool {
+    part_on(|s| s.snow && s.mob_trails)
+}
+
+pub fn snow_depth() -> f32 {
+    settings().snow_depth
+}
+
 pub fn ropes_on() -> bool {
     part_on(|s| s.ropes)
 }
 
 pub fn capes_on() -> bool {
     part_on(|s| s.capes)
+}
+
+/// Whether a cape is hidden while its wearer has a chest piece on.
+pub fn hide_cape_with_armor() -> bool {
+    part_on(|s| s.capes && s.hide_cape)
 }
 
 /// The explosion packet: a blast at `center` of `radius`.
@@ -3374,7 +3963,7 @@ pub fn scan_found(y: i32, found: &[([i32; 3], u8)]) {
 
 /// The player's feet this frame and the top of the snow they stand on (None: not on snow).
 pub fn footstep(feet: [f64; 3], yaw: f32, top: Option<f64>) {
-    if !snow_on() {
+    if !snow_on() || !settings().snow_powder {
         return;
     }
     with(|s| s.env.footstep(v3(feet[0], feet[1], feet[2]), f64::from(yaw), top));
@@ -3471,6 +4060,10 @@ pub fn cape(id: u32, rest: &[Vertex], pivot: [f32; 3], out: &mut Vec<Vertex>) ->
         return false;
     }
     let st = settings();
+    let d = pivot[0] * pivot[0] + pivot[1] * pivot[1] + pivot[2] * pivot[2];
+    if d.sqrt() > st.cape_range {
+        return false;
+    }
     with(|s| {
         let cam = s.camera;
         let dt = s.last_dt;
@@ -3713,7 +4306,7 @@ impl Env {
     /// and its neighbours before it settles into the block.
     pub fn pour(&mut self, pos: [i32; 3], lava: bool) {
         let c = v3(f64::from(pos[0]) + 0.5, f64::from(pos[1]) + 0.75, f64::from(pos[2]) + 0.5);
-        let n = if lava { 40 } else { 70 };
+        let n = ((if lava { 40.0 } else { 70.0 }) * f64::from(settings().liquid_amount)).round() as usize;
         for _ in 0..n {
             let d = self.rng.unit();
             let x = c + v3(d.x * 0.3, d.y.abs() * 0.2, d.z * 0.3);
@@ -3856,7 +4449,7 @@ pub fn pour(pos: [i32; 3], lava: bool) {
 
 /// The player's feet: in water or not, and their speed down (blocks a second).
 pub fn player_water(feet: [f64; 3], in_water: bool, down: f64) {
-    if !liquids_on() {
+    if !liquids_on() || !settings().splashes {
         return;
     }
     with(|s| s.env.player_in_water(v3(feet[0], feet[1], feet[2]), in_water, down));
@@ -4671,6 +5264,9 @@ pub enum SetupUi {
     Label { text: String, x: f32, y: f32, color: [u8; 4], scale: f32, left: bool },
     /// A sprite (`SETUP_SPRITES`) repeated over the rectangle, `size` pixels a tile, tinted.
     Tiles { x: f32, y: f32, w: f32, h: f32, sprite: u8, size: f32, color: [u8; 4] },
+    /// What comes up to the next `Unclip` shows only inside the rectangle.
+    Clip { x: f32, y: f32, w: f32, h: f32 },
+    Unclip,
 }
 
 /// More things the quick setup and the Physics Settings screen draw, in GUI pixels.
@@ -4891,13 +5487,13 @@ pub const CATEGORIES: [Category; 15] = [
     Category { name: "OCEAN", title: "Ocean Settings", about: "Water that knows how deep and open it is: the open sea rolls in a swell that boats ride, rivers and lakes lap, puddles stay still.", scene: Scene::Ocean, kind: 0 },
     Category { name: "DYNAMIC BLOCKS", title: "Dynamic Block Settings", about: "Leaves, grass, flowers, crops and vines sway in the wind, and seagrass and kelp move with the current.", scene: Scene::Trees, kind: 0 },
     Category { name: "CLOTH", title: "Cloth Settings", about: "Capes are cloth that trails behind you, lifts when you run and flutters in the wind. Leads and fishing lines sag and swing as real ropes.", scene: Scene::Trees, kind: 0 },
-    Category { name: "PROJECTILES", title: "Projectile Settings", about: "Not in Horizon Physics yet: snowballs, eggs and ender pearls that shatter into pieces when they hit something.", scene: Scene::Block(1), kind: 1 },
+    Category { name: "PROJECTILES", title: "Projectile Settings", about: "Snowballs and eggs shatter into little pieces where they hit, and explosions blow blocks apart into pieces that fly.", scene: Scene::Block(1), kind: 0 },
     Category { name: "LIQUIDS", title: "Liquid Settings", about: "BETA! Water and lava you pour splash out as droplets that run over the blocks before they settle, and a fall into water splashes.", scene: Scene::Weather, kind: 0 },
     Category { name: "SNOW", title: "Snow Settings", about: "Snow layers give way where you and the mobs walk and leave a trail behind, and every step kicks up a little powder.", scene: Scene::Snow, kind: 0 },
-    Category { name: "SOUNDS", title: "Sound Settings", about: "Not in Horizon Physics yet: sounds for the pieces as they land and tumble, and for the weather.", scene: Scene::Collapse, kind: 1 },
-    Category { name: "ANIMATIONS", title: "Animation Settings", about: "Choose how pieces and dead mobs go when their time is up: they shrink away, sink into the ground, or are simply gone.", scene: Scene::Block(1), kind: 0 },
+    Category { name: "SOUNDS", title: "Sound Settings", about: "Hear the pieces land! Blocks clatter and ragdolls thump as they hit the ground, and the wind howls when it blows hard.", scene: Scene::Collapse, kind: 0 },
+    Category { name: "ANIMATIONS", title: "Despawn Animation Settings", about: "Choose how pieces and dead mobs go when their time is up: they shrink away, sink into the ground, bounce, or go up in a puff. Or make your own!", scene: Scene::Block(1), kind: 0 },
     Category { name: "FIRE & SMOKE", title: "Fire & Smoke Settings", about: "Don't get stuck in a building without a chimney! Fire, campfires and lava give off soft smoke that rises, drifts and gathers under ceilings.", scene: Scene::Fire, kind: 0 },
-    Category { name: "WEATHER", title: "Weather Settings", about: "Rain splashes up off the ground where it lands, and the wind blows the smoke, the capes, the ropes and the plants.", scene: Scene::Weather, kind: 0 },
+    Category { name: "WEATHER", title: "Weather Settings", about: "Rain splashes up off the ground, snow drifts down, sand blows off the deserts, and the wind gets stronger with the weather and blows everything around.", scene: Scene::Weather, kind: 0 },
     Category { name: "COLLAPSE", title: "Collapse Settings", about: "CAREFUL! Break what holds a structure up and everything above it falls: trees fall over, bridges and towers come down.", scene: Scene::Collapse, kind: 0 },
     Category { name: "CREDITS", title: "Credits", about: "Horizon Physics by tariksabanuz. Inspired by PhysicsMod by Haubna; none of its code or pictures are used. The textures are your own game's.", scene: Scene::Mob(3), kind: 2 },
 ];
@@ -4905,9 +5501,7 @@ pub const CATEGORIES: [Category; 15] = [
 /// A setting on a page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
-    MaxObjects, McBreak, SimSpeed, Items, ItemSpin, Pvp, ItemBreak, Crack, Sprint, Eat, BlockParticles, ParticleLife, ParticleVar,
-    Deaths, MobLife, MobVar, Anim, JointForce, JointBlood, RagdollLimit,
-    Blocks, BlockStyle, Pieces, Lifetime, Explosions, Waves, Plants, Capes, Ropes, Liquids, Snow, Smoke, Weather, Wind, Collapse,
+    MaxObjects, McBreak, SimSpeed, Items, ItemSpin, Pvp, ItemBreak, Crack, Sprint, Eat, BlockParticles, ParticleLife, ParticleVar, Deaths, MobLife, MobVar, Anim, JointForce, JointBlood, RagdollLimit, BlockPhysics, Activation, BlockLife, ObjScale, BlockVar, CapeOn, CapeRange, HideCape, Ropes, ImpactVolume, WindVolume, WindForces, Weather, RainAmount, ThunderAmount, WindClear, WindRain, WindThunder, OpRain, OpSnow, OpDust, Collapse, CollapseDrops, CollapseTicks, CollapseLimit, Waves, WaveHeight, Boats, Foam, SwayLeaves, Plants, SwayVines, SwayWater, SwayStrength, Projectiles, Explosions, Liquids, LiquidAmount, Splashes, Snow, MobTrails, SnowDepth, SnowPowder, Smoke, Embers, SmokeAmount, SmokeOpacity, VanillaSmoke, AnimMotion, AnimParticle, AnimDuration, AnimAmount,
 }
 
 /// A slider's range and step.
@@ -4917,21 +5511,39 @@ fn slider(k: Key) -> Option<(f32, f32, f32)> {
         Key::SimSpeed => (0.1, 2.0, 0.05),
         Key::ItemSpin => (0.0, 3.0, 0.05),
         Key::ParticleLife => (0.0, 1.0, 0.01),
-        Key::ParticleVar | Key::MobVar => (0.0, 10.0, 0.1),
+        Key::ParticleVar => (0.0, 10.0, 0.1),
         Key::MobLife => (0.0, 30.0, 0.1),
+        Key::MobVar => (0.0, 10.0, 0.1),
         Key::JointForce => (0.0, 10.0, 0.05),
         Key::JointBlood => (0.0, 5.0, 0.05),
         Key::RagdollLimit => (1.0, 64.0, 1.0),
+        Key::Activation => (8.0, 256.0, 1.0),
+        Key::BlockLife => (0.0, 30.0, 0.1),
+        Key::ObjScale => (0.25, 3.0, 0.05),
+        Key::BlockVar => (0.0, 10.0, 0.1),
+        Key::CapeRange => (4.0, 128.0, 1.0),
+        Key::ImpactVolume => (0.0, 2.0, 0.05),
+        Key::WindVolume => (0.0, 2.0, 0.05),
+        Key::RainAmount => (0.0, 20.0, 1.0),
+        Key::ThunderAmount => (0.0, 20.0, 1.0),
+        Key::WindClear => (0.0, 3.0, 0.05),
+        Key::WindRain => (0.0, 3.0, 0.05),
+        Key::WindThunder => (0.0, 3.0, 0.05),
+        Key::OpRain => (0.0, 1.0, 0.05),
+        Key::OpSnow => (0.0, 1.0, 0.05),
+        Key::OpDust => (0.0, 1.0, 0.05),
+        Key::CollapseTicks => (0.0, 100.0, 1.0),
+        Key::CollapseLimit => (10.0, 1000.0, 10.0),
+        Key::WaveHeight => (0.0, 3.0, 0.05),
+        Key::SwayStrength => (0.0, 3.0, 0.05),
+        Key::LiquidAmount => (0.0, 3.0, 0.05),
+        Key::SnowDepth => (0.1, 1.0, 0.05),
+        Key::SmokeAmount => (0.0, 3.0, 0.05),
+        Key::SmokeOpacity => (0.1, 2.0, 0.05),
+        Key::AnimDuration => (0.05, 3.0, 0.05),
+        Key::AnimAmount => (0.0, 32.0, 1.0),
         _ => return None,
     })
-}
-
-fn on_upper(b: bool) -> &'static str {
-    if b { "ON" } else { "OFF" }
-}
-
-fn decimal(v: f32) -> String {
-    format!("{v:.2}").replace('.', ",")
 }
 
 impl Key {
@@ -4949,28 +5561,66 @@ impl Key {
             Key::Eat => format!("Eat Particle Physics: {}", on_upper(s.eat)),
             Key::BlockParticles => format!("Block Particle Physics: {}", on_upper(s.block_particles)),
             Key::ParticleLife => format!("Lifetime (Particles): {}", decimal(s.particle_life)),
-            Key::ParticleVar | Key::MobVar => format!("Lifetime Variance: {}", decimal(if self == Key::ParticleVar { s.particle_var } else { s.mob_var })),
-            Key::Deaths => format!("Mob Physics: {}", DEATHS[s.deaths as usize % 4]),
+            Key::ParticleVar => format!("Lifetime Variance: {}", decimal(s.particle_var)),
             Key::MobLife => format!("Lifetime (Mobs): {}", decimal(s.mob_life)),
-            Key::Anim => format!("Animation: {}", ["default", "sink", "none"][s.anim as usize % 3]),
+            Key::MobVar => format!("Lifetime Variance: {}", decimal(s.mob_var)),
             Key::JointForce => format!("Ragdoll Joint Break Force: {}", decimal(s.joint_force)),
             Key::JointBlood => format!("Ragdoll Joint Break Blood: {}", decimal(s.joint_blood)),
             Key::RagdollLimit => format!("Ragdoll Limit: {}", s.ragdoll_limit),
-            Key::Blocks => format!("Block Physics: {}", on_upper(s.blocks)),
-            Key::BlockStyle => format!("Block Style: {}", BLOCK_STYLES[s.block_style as usize % 4]),
-            Key::Pieces => format!("Pieces Per Block: {}", PIECES[s.pieces as usize % 3].0),
-            Key::Lifetime => format!("Lifetime (Blocks): {}", LIFETIME[s.lifetime as usize % 4].0),
-            Key::Explosions => format!("Explosion Physics: {}", on_upper(s.explosions)),
-            Key::Waves => format!("Ocean Waves: {}", on_upper(s.waves)),
-            Key::Plants => format!("Swaying Plants: {}", on_upper(s.plants)),
-            Key::Capes => format!("Cape Physics: {}", on_upper(s.capes)),
+            Key::Activation => format!("Activation Distance: {}", decimal(s.activation)),
+            Key::BlockLife => format!("Lifetime (Blocks): {}", decimal(s.block_life)),
+            Key::ObjScale => format!("Physics Objects Scale: {}", decimal(s.obj_scale)),
+            Key::BlockVar => format!("Lifetime Variance: {}", decimal(s.block_var)),
+            Key::CapeOn => format!("Entity Cloth Physics: {}", on_upper(s.capes)),
+            Key::CapeRange => format!("Entity Cloth Range: {}", decimal(s.cape_range)),
+            Key::HideCape => format!("Hide Cloth when Armor equipped: {}", on_upper(s.hide_cape)),
             Key::Ropes => format!("Lead and Fishing Line Physics: {}", on_upper(s.ropes)),
+            Key::ImpactVolume => format!("Physics Impact Volume: {}", decimal(s.impact_volume)),
+            Key::WindVolume => format!("Wind Volume: {}", decimal(s.wind_volume)),
+            Key::WindForces => format!("Wind Forces: {}", on_upper(s.wind_forces)),
+            Key::Weather => format!("Weather Particles: {}", on_upper(s.weather)),
+            Key::RainAmount => format!("Rain Weather Particle Amount: {}", s.rain_amount),
+            Key::ThunderAmount => format!("Thunder Weather Particle Amount: {}", s.thunder_amount),
+            Key::WindClear => format!("Clear Weather: {}", decimal(s.wind_clear)),
+            Key::WindRain => format!("Rainy Weather: {}", decimal(s.wind_rain)),
+            Key::WindThunder => format!("Thunder Weather: {}", decimal(s.wind_thunder)),
+            Key::OpRain => format!("Rain: {}", decimal(s.op_rain)),
+            Key::OpSnow => format!("Snow: {}", decimal(s.op_snow)),
+            Key::OpDust => format!("Dust: {}", decimal(s.op_dust)),
+            Key::Collapse => format!("Collapse Blocks: {}", on_upper(s.collapse)),
+            Key::CollapseDrops => format!("Drop collapsed items: {}", on_upper(s.collapse_drops)),
+            Key::CollapseTicks => format!("Collapse Speed (Ticks): {}", s.collapse_ticks),
+            Key::CollapseLimit => format!("Collapse Limit (Blocks): {}", s.collapse_limit),
+            Key::Waves => format!("Ocean Waves: {}", on_upper(s.waves)),
+            Key::WaveHeight => format!("Wave Height: {}", decimal(s.wave_height)),
+            Key::Boats => format!("Boat Physics: {}", on_upper(s.boats)),
+            Key::Foam => format!("Ocean Foam: {}", on_upper(s.foam)),
+            Key::SwayLeaves => format!("Swaying Leaves: {}", on_upper(s.sway_leaves)),
+            Key::Plants => format!("Swaying Plants: {}", on_upper(s.plants)),
+            Key::SwayVines => format!("Swaying Vines: {}", on_upper(s.sway_vines)),
+            Key::SwayWater => format!("Swaying Water Plants: {}", on_upper(s.sway_water)),
+            Key::SwayStrength => format!("Sway Strength: {}", decimal(s.sway_strength)),
+            Key::Projectiles => format!("Projectile Physics: {}", on_upper(s.projectiles)),
+            Key::Explosions => format!("Explosion Physics: {}", on_upper(s.explosions)),
             Key::Liquids => format!("Liquid Physics (Beta): {}", on_upper(s.liquids)),
-            Key::Snow => format!("Snow Trails: {}", on_upper(s.snow)),
-            Key::Smoke => format!("Fire and Smoke Physics: {}", on_upper(s.smoke)),
-            Key::Weather => format!("Rain Splashes: {}", on_upper(s.weather)),
-            Key::Wind => format!("Wind: {}", WIND[s.wind as usize % 3].0),
-            Key::Collapse => format!("Collapsing Structures: {}", on_upper(s.collapse)),
+            Key::LiquidAmount => format!("Droplet Amount: {}", decimal(s.liquid_amount)),
+            Key::Splashes => format!("Splash Physics: {}", on_upper(s.splashes)),
+            Key::Snow => format!("Snow Physics: {}", on_upper(s.snow)),
+            Key::MobTrails => format!("Mob Trails: {}", on_upper(s.mob_trails)),
+            Key::SnowDepth => format!("Trail Depth: {}", decimal(s.snow_depth)),
+            Key::SnowPowder => format!("Snow Powder: {}", on_upper(s.snow_powder)),
+            Key::Smoke => format!("Smoke Physics: {}", on_upper(s.smoke)),
+            Key::Embers => format!("Embers: {}", on_upper(s.embers)),
+            Key::SmokeAmount => format!("Smoke Amount: {}", decimal(s.smoke_amount)),
+            Key::SmokeOpacity => format!("Smoke Opacity: {}", decimal(s.smoke_opacity)),
+            Key::VanillaSmoke => format!("Replace Vanilla Smoke: {}", on_upper(s.vanilla_smoke)),
+            Key::AnimMotion => format!("Motion: {}", ANIM_MOTIONS[s.anims[anim_edit()].motion as usize % ANIM_MOTIONS.len()]),
+            Key::AnimParticle => format!("Particles: {}", ANIM_PARTICLES[s.anims[anim_edit()].particle as usize % ANIM_PARTICLES.len()]),
+            Key::AnimDuration => format!("Duration: {}", decimal(s.anims[anim_edit()].duration)),
+            Key::AnimAmount => format!("Particle Amount: {}", s.anims[anim_edit()].amount),
+            Key::Deaths => format!("Mob Physics: {}", DEATHS[s.deaths as usize % 4]),
+            Key::Anim => format!("Animation: {}", anim_name(s, s.anim as usize)),
+            Key::BlockPhysics => format!("Block Physics: {}", if s.blocks { ["Blocky", "Particles", "Crumbled", "Fractured"][s.block_style as usize % 4] } else { "Off" }),
         }
     }
 
@@ -4978,15 +5628,40 @@ impl Key {
     fn fraction(self, s: &Settings) -> f32 {
         let v = match self {
             Key::MaxObjects => s.max_objects as f32,
-            Key::SimSpeed => s.sim_speed,
-            Key::ItemSpin => s.item_spin,
-            Key::ParticleLife => s.particle_life,
-            Key::ParticleVar => s.particle_var,
-            Key::MobLife => s.mob_life,
-            Key::MobVar => s.mob_var,
-            Key::JointForce => s.joint_force,
-            Key::JointBlood => s.joint_blood,
+            Key::SimSpeed => s.sim_speed as f32,
+            Key::ItemSpin => s.item_spin as f32,
+            Key::ParticleLife => s.particle_life as f32,
+            Key::ParticleVar => s.particle_var as f32,
+            Key::MobLife => s.mob_life as f32,
+            Key::MobVar => s.mob_var as f32,
+            Key::JointForce => s.joint_force as f32,
+            Key::JointBlood => s.joint_blood as f32,
             Key::RagdollLimit => s.ragdoll_limit as f32,
+            Key::Activation => s.activation as f32,
+            Key::BlockLife => s.block_life as f32,
+            Key::ObjScale => s.obj_scale as f32,
+            Key::BlockVar => s.block_var as f32,
+            Key::CapeRange => s.cape_range as f32,
+            Key::ImpactVolume => s.impact_volume as f32,
+            Key::WindVolume => s.wind_volume as f32,
+            Key::RainAmount => s.rain_amount as f32,
+            Key::ThunderAmount => s.thunder_amount as f32,
+            Key::WindClear => s.wind_clear as f32,
+            Key::WindRain => s.wind_rain as f32,
+            Key::WindThunder => s.wind_thunder as f32,
+            Key::OpRain => s.op_rain as f32,
+            Key::OpSnow => s.op_snow as f32,
+            Key::OpDust => s.op_dust as f32,
+            Key::CollapseTicks => s.collapse_ticks as f32,
+            Key::CollapseLimit => s.collapse_limit as f32,
+            Key::WaveHeight => s.wave_height as f32,
+            Key::SwayStrength => s.sway_strength as f32,
+            Key::LiquidAmount => s.liquid_amount as f32,
+            Key::SnowDepth => s.snow_depth as f32,
+            Key::SmokeAmount => s.smoke_amount as f32,
+            Key::SmokeOpacity => s.smoke_opacity as f32,
+            Key::AnimDuration => s.anims[anim_edit()].duration,
+            Key::AnimAmount => f32::from(s.anims[anim_edit()].amount),
             _ => return 0.0,
         };
         let (lo, hi, _) = slider(self).unwrap_or((0.0, 1.0, 1.0));
@@ -5001,7 +5676,7 @@ impl Key {
         let v = (lo + (hi - lo) * t.clamp(0.0, 1.0)) / step;
         let v = (v.round() * step).clamp(lo, hi);
         match self {
-            Key::MaxObjects => s.max_objects = v as u32,
+            Key::MaxObjects => s.max_objects = v.round() as u32,
             Key::SimSpeed => s.sim_speed = v,
             Key::ItemSpin => s.item_spin = v,
             Key::ParticleLife => s.particle_life = v,
@@ -5010,7 +5685,32 @@ impl Key {
             Key::MobVar => s.mob_var = v,
             Key::JointForce => s.joint_force = v,
             Key::JointBlood => s.joint_blood = v,
-            Key::RagdollLimit => s.ragdoll_limit = v as u32,
+            Key::RagdollLimit => s.ragdoll_limit = v.round() as u32,
+            Key::Activation => s.activation = v,
+            Key::BlockLife => s.block_life = v,
+            Key::ObjScale => s.obj_scale = v,
+            Key::BlockVar => s.block_var = v,
+            Key::CapeRange => s.cape_range = v,
+            Key::ImpactVolume => s.impact_volume = v,
+            Key::WindVolume => s.wind_volume = v,
+            Key::RainAmount => s.rain_amount = v.round() as u32,
+            Key::ThunderAmount => s.thunder_amount = v.round() as u32,
+            Key::WindClear => s.wind_clear = v,
+            Key::WindRain => s.wind_rain = v,
+            Key::WindThunder => s.wind_thunder = v,
+            Key::OpRain => s.op_rain = v,
+            Key::OpSnow => s.op_snow = v,
+            Key::OpDust => s.op_dust = v,
+            Key::CollapseTicks => s.collapse_ticks = v.round() as u32,
+            Key::CollapseLimit => s.collapse_limit = v.round() as u32,
+            Key::WaveHeight => s.wave_height = v,
+            Key::SwayStrength => s.sway_strength = v,
+            Key::LiquidAmount => s.liquid_amount = v,
+            Key::SnowDepth => s.snow_depth = v,
+            Key::SmokeAmount => s.smoke_amount = v,
+            Key::SmokeOpacity => s.smoke_opacity = v,
+            Key::AnimDuration => s.anims[anim_edit()].duration = v,
+            Key::AnimAmount => s.anims[anim_edit()].amount = v.round() as u8,
             _ => {}
         }
     }
@@ -5026,23 +5726,44 @@ impl Key {
             Key::Sprint => s.sprint = !s.sprint,
             Key::Eat => s.eat = !s.eat,
             Key::BlockParticles => s.block_particles = !s.block_particles,
-            Key::Deaths => s.deaths = (s.deaths + 1) % 4,
-            Key::Anim => s.anim = (s.anim + 1) % 3,
-            Key::Blocks => s.blocks = !s.blocks,
-            Key::BlockStyle => s.block_style = (s.block_style + 1) % 4,
-            Key::Pieces => s.pieces = (s.pieces + 1) % 3,
-            Key::Lifetime => s.lifetime = (s.lifetime + 1) % 4,
-            Key::Explosions => s.explosions = !s.explosions,
-            Key::Waves => s.waves = !s.waves,
-            Key::Plants => s.plants = !s.plants,
-            Key::Capes => s.capes = !s.capes,
+            Key::CapeOn => s.capes = !s.capes,
+            Key::HideCape => s.hide_cape = !s.hide_cape,
             Key::Ropes => s.ropes = !s.ropes,
-            Key::Liquids => s.liquids = !s.liquids,
-            Key::Snow => s.snow = !s.snow,
-            Key::Smoke => s.smoke = !s.smoke,
+            Key::WindForces => s.wind_forces = !s.wind_forces,
             Key::Weather => s.weather = !s.weather,
-            Key::Wind => s.wind = (s.wind + 1) % 3,
             Key::Collapse => s.collapse = !s.collapse,
+            Key::CollapseDrops => s.collapse_drops = !s.collapse_drops,
+            Key::Waves => s.waves = !s.waves,
+            Key::Boats => s.boats = !s.boats,
+            Key::Foam => s.foam = !s.foam,
+            Key::SwayLeaves => s.sway_leaves = !s.sway_leaves,
+            Key::Plants => s.plants = !s.plants,
+            Key::SwayVines => s.sway_vines = !s.sway_vines,
+            Key::SwayWater => s.sway_water = !s.sway_water,
+            Key::Projectiles => s.projectiles = !s.projectiles,
+            Key::Explosions => s.explosions = !s.explosions,
+            Key::Liquids => s.liquids = !s.liquids,
+            Key::Splashes => s.splashes = !s.splashes,
+            Key::Snow => s.snow = !s.snow,
+            Key::MobTrails => s.mob_trails = !s.mob_trails,
+            Key::SnowPowder => s.snow_powder = !s.snow_powder,
+            Key::Smoke => s.smoke = !s.smoke,
+            Key::Embers => s.embers = !s.embers,
+            Key::VanillaSmoke => s.vanilla_smoke = !s.vanilla_smoke,
+            Key::Deaths => s.deaths = (s.deaths + 1) % 4,
+            Key::AnimMotion => { let a = &mut s.anims[anim_edit()]; a.motion = (a.motion + 1) % ANIM_MOTIONS.len() as u8; }
+            Key::AnimParticle => { let a = &mut s.anims[anim_edit()]; a.particle = (a.particle + 1) % ANIM_PARTICLES.len() as u8; }
+            Key::Anim => s.anim = next_anim(s, s.anim),
+            Key::BlockPhysics => {
+                if !s.blocks {
+                    s.blocks = true;
+                    s.block_style = 0;
+                } else if s.block_style >= 3 {
+                    s.blocks = false;
+                } else {
+                    s.block_style += 1;
+                }
+            }
             _ => {}
         }
     }
@@ -5071,57 +5792,132 @@ impl Key {
             Key::JointForce => s.joint_force = d.joint_force,
             Key::JointBlood => s.joint_blood = d.joint_blood,
             Key::RagdollLimit => s.ragdoll_limit = d.ragdoll_limit,
-            Key::Blocks => s.blocks = d.blocks,
-            Key::BlockStyle => s.block_style = d.block_style,
-            Key::Pieces => s.pieces = d.pieces,
-            Key::Lifetime => s.lifetime = d.lifetime,
-            Key::Explosions => s.explosions = d.explosions,
-            Key::Waves => s.waves = d.waves,
-            Key::Plants => s.plants = d.plants,
-            Key::Capes => s.capes = d.capes,
+            Key::BlockPhysics => { s.blocks = d.blocks; s.block_style = d.block_style; }
+            Key::Activation => s.activation = d.activation,
+            Key::BlockLife => s.block_life = d.block_life,
+            Key::ObjScale => s.obj_scale = d.obj_scale,
+            Key::BlockVar => s.block_var = d.block_var,
+            Key::CapeOn => s.capes = d.capes,
+            Key::CapeRange => s.cape_range = d.cape_range,
+            Key::HideCape => s.hide_cape = d.hide_cape,
             Key::Ropes => s.ropes = d.ropes,
-            Key::Liquids => s.liquids = d.liquids,
-            Key::Snow => s.snow = d.snow,
-            Key::Smoke => s.smoke = d.smoke,
+            Key::ImpactVolume => s.impact_volume = d.impact_volume,
+            Key::WindVolume => s.wind_volume = d.wind_volume,
+            Key::WindForces => s.wind_forces = d.wind_forces,
             Key::Weather => s.weather = d.weather,
-            Key::Wind => s.wind = d.wind,
+            Key::RainAmount => s.rain_amount = d.rain_amount,
+            Key::ThunderAmount => s.thunder_amount = d.thunder_amount,
+            Key::WindClear => s.wind_clear = d.wind_clear,
+            Key::WindRain => s.wind_rain = d.wind_rain,
+            Key::WindThunder => s.wind_thunder = d.wind_thunder,
+            Key::OpRain => s.op_rain = d.op_rain,
+            Key::OpSnow => s.op_snow = d.op_snow,
+            Key::OpDust => s.op_dust = d.op_dust,
             Key::Collapse => s.collapse = d.collapse,
+            Key::CollapseDrops => s.collapse_drops = d.collapse_drops,
+            Key::CollapseTicks => s.collapse_ticks = d.collapse_ticks,
+            Key::CollapseLimit => s.collapse_limit = d.collapse_limit,
+            Key::Waves => s.waves = d.waves,
+            Key::WaveHeight => s.wave_height = d.wave_height,
+            Key::Boats => s.boats = d.boats,
+            Key::Foam => s.foam = d.foam,
+            Key::SwayLeaves => s.sway_leaves = d.sway_leaves,
+            Key::Plants => s.plants = d.plants,
+            Key::SwayVines => s.sway_vines = d.sway_vines,
+            Key::SwayWater => s.sway_water = d.sway_water,
+            Key::SwayStrength => s.sway_strength = d.sway_strength,
+            Key::Projectiles => s.projectiles = d.projectiles,
+            Key::Explosions => s.explosions = d.explosions,
+            Key::Liquids => s.liquids = d.liquids,
+            Key::LiquidAmount => s.liquid_amount = d.liquid_amount,
+            Key::Splashes => s.splashes = d.splashes,
+            Key::Snow => s.snow = d.snow,
+            Key::MobTrails => s.mob_trails = d.mob_trails,
+            Key::SnowDepth => s.snow_depth = d.snow_depth,
+            Key::SnowPowder => s.snow_powder = d.snow_powder,
+            Key::Smoke => s.smoke = d.smoke,
+            Key::Embers => s.embers = d.embers,
+            Key::SmokeAmount => s.smoke_amount = d.smoke_amount,
+            Key::SmokeOpacity => s.smoke_opacity = d.smoke_opacity,
+            Key::VanillaSmoke => s.vanilla_smoke = d.vanilla_smoke,
+            Key::AnimMotion | Key::AnimParticle | Key::AnimDuration | Key::AnimAmount => { let e = anim_edit(); s.anims[e] = anim_default(e); }
         }
     }
 }
 
-/// A category's settings page: its rows (one wide or two side by side) and its middle footer
-/// button (the gravity, or nothing).
-pub fn category_rows(cat: usize) -> Vec<Vec<Key>> {
+/// A line of a settings page: one setting wide or two side by side, a heading over the settings
+/// below it, or a note in yellow.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Row {
+    Keys(Vec<Key>),
+    Header(&'static str),
+    Note(&'static str),
+}
+
+/// What a category's settings page holds, top to bottom.
+pub fn page_rows(cat: usize) -> Vec<Row> {
     use Key::*;
+    use Row::{Header, Keys, Note};
     match cat {
-        0 => vec![vec![MaxObjects, McBreak], vec![SimSpeed], vec![Items], vec![ItemSpin], vec![Pvp], vec![ItemBreak], vec![Crack, Sprint], vec![Eat, BlockParticles], vec![ParticleLife, ParticleVar]],
-        1 => vec![vec![Deaths, MobLife], vec![MobVar, Anim], vec![JointForce], vec![JointBlood], vec![RagdollLimit]],
-        2 => vec![vec![Blocks], vec![BlockStyle, Pieces], vec![Lifetime, Explosions]],
-        3 => vec![vec![Waves], vec![Wind]],
-        4 => vec![vec![Plants], vec![Wind]],
-        5 => vec![vec![Capes], vec![Ropes]],
-        7 => vec![vec![Liquids]],
-        8 => vec![vec![Snow]],
-        10 => vec![vec![Anim]],
-        11 => vec![vec![Smoke]],
-        12 => vec![vec![Weather], vec![Wind]],
-        13 => vec![vec![Collapse]],
+        0 => vec![Keys(vec![MaxObjects, McBreak]), Keys(vec![SimSpeed]), Keys(vec![Items]), Keys(vec![ItemSpin]), Keys(vec![Pvp]), Keys(vec![ItemBreak]), Keys(vec![Crack, Sprint]), Keys(vec![Eat, BlockParticles]), Keys(vec![ParticleLife, ParticleVar])],
+        1 => vec![Keys(vec![Deaths, MobLife]), Keys(vec![MobVar, Anim]), Keys(vec![JointForce]), Keys(vec![JointBlood]), Keys(vec![RagdollLimit])],
+        2 => vec![Keys(vec![BlockPhysics, Activation]), Keys(vec![BlockLife, ObjScale]), Keys(vec![BlockVar, Anim])],
+        3 => vec![Keys(vec![Waves, Boats]), Keys(vec![WaveHeight]), Keys(vec![Foam]), Note("Waves need a Horizon shader pack or the mod's own look.")],
+        4 => vec![Keys(vec![SwayLeaves, Plants]), Keys(vec![SwayVines]), Keys(vec![SwayWater]), Keys(vec![SwayStrength]), Note("The wind's strength per weather is on the Weather page.")],
+        5 => vec![Keys(vec![CapeOn, CapeRange]), Keys(vec![HideCape]), Note("Only capes are cloth. Leads and fishing lines are ropes:"), Keys(vec![Ropes])],
+        6 => vec![Keys(vec![Projectiles]), Keys(vec![Explosions])],
+        7 => vec![Keys(vec![Liquids]), Keys(vec![LiquidAmount]), Keys(vec![Splashes])],
+        8 => vec![Keys(vec![Snow, MobTrails]), Keys(vec![SnowDepth]), Keys(vec![SnowPowder])],
+        9 => vec![Keys(vec![ImpactVolume, WindVolume])],
+        10 => vec![Keys(vec![Anim])],
+        11 => vec![Keys(vec![Smoke, Embers]), Keys(vec![SmokeAmount]), Keys(vec![SmokeOpacity]), Keys(vec![VanillaSmoke])],
+        12 => vec![
+            Keys(vec![WindForces, Weather]),
+            Keys(vec![RainAmount]),
+            Keys(vec![ThunderAmount]),
+            Header("Wind Strength"),
+            Keys(vec![WindClear]),
+            Keys(vec![WindRain]),
+            Keys(vec![WindThunder]),
+            Header("Particle Opacities"),
+            Keys(vec![OpRain]),
+            Keys(vec![OpSnow]),
+            Keys(vec![OpDust]),
+        ],
+        13 => vec![Keys(vec![Collapse, CollapseDrops]), Keys(vec![CollapseTicks]), Keys(vec![CollapseLimit])],
         _ => Vec::new(),
     }
 }
+
+/// A category's settings, row by row (the headings and notes left out).
+pub fn category_rows(cat: usize) -> Vec<Vec<Key>> {
+    page_rows(cat)
+        .into_iter()
+        .filter_map(|r| match r {
+            Row::Keys(k) => Some(k),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The despawn animation list's category.
+pub const ANIM_PAGE: usize = 10;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuView {
     Main,
     Page(usize),
     Setup,
+    /// The animation editor, on a slot.
+    Anim(usize),
 }
 
 pub struct Menu {
     pub open: bool,
     pub view: MenuView,
     pub scroll: f32,
+    /// How far a page is scrolled down.
+    pub page_scroll: f32,
     /// The slider being dragged (row, column).
     drag: Option<(usize, usize)>,
     /// The category whose picture shows, and the picture.
@@ -5132,18 +5928,32 @@ pub struct Menu {
 
 static MENU: Mutex<Option<Menu>> = Mutex::new(None);
 
+impl Menu {
+    fn new() -> Menu {
+        let mut picture = SetupScene::new(CATEGORIES[0].scene, 3);
+        picture.zoom = MENU_ZOOM;
+        Menu { open: false, view: MenuView::Main, scroll: 0.0, page_scroll: 0.0, drag: None, shown: 0, picture, clock: None }
+    }
+
+    #[doc(hidden)]
+    pub fn for_test() -> Menu {
+        let mut m = Menu::new();
+        m.open = true;
+        m
+    }
+
+    /// Goes to `view`, at the top of it.
+    fn go(&mut self, view: MenuView) {
+        self.view = view;
+        self.page_scroll = 0.0;
+        self.drag = None;
+    }
+}
+
 /// Runs `f` on the Physics Settings screen, its picture moved on to now.
 pub fn with_menu<R>(f: impl FnOnce(&mut Menu) -> R) -> R {
     let mut g = MENU.lock().unwrap_or_else(|e| e.into_inner());
-    let m = g.get_or_insert_with(|| Menu {
-        open: false,
-        view: MenuView::Main,
-        scroll: 0.0,
-        drag: None,
-        shown: 0,
-        picture: SetupScene::new(CATEGORIES[0].scene, 3),
-        clock: None,
-    });
+    let m = g.get_or_insert_with(Menu::new);
     if m.picture.zoom != MENU_ZOOM {
         m.picture.zoom = MENU_ZOOM;
     }
@@ -5161,8 +5971,7 @@ pub fn menu_is_open() -> bool {
 pub fn menu_open() {
     with_menu(|m| {
         m.open = true;
-        m.view = MenuView::Main;
-        m.drag = None;
+        m.go(MenuView::Main);
     });
 }
 
@@ -5201,6 +6010,8 @@ const BAR_GREEN: [u8; 4] = [110, 232, 40, 255];
 const BAR_RED: [u8; 4] = [240, 84, 60, 255];
 const BAR_YELLOW: [u8; 4] = [250, 214, 30, 255];
 const BAR_LIGHT: [u8; 4] = [214, 214, 214, 255];
+const NOTE_YELLOW: [u8; 4] = [255, 255, 85, 255];
+const GREY_TEXT: [u8; 4] = [130, 130, 130, 255];
 
 /// A tab of the menu: its fill, the bar on its `left` or right edge, its name.
 fn menu_tab(out: &mut Vec<SetupUi>, b: &SetupBox, name: &str, bar: [u8; 4], left: bool, hover: bool) {
@@ -5213,26 +6024,153 @@ fn menu_tab(out: &mut Vec<SetupUi>, b: &SetupBox, name: &str, bar: [u8; 4], left
     out.push(SetupUi::label(name, tx, b.y + (b.h - 8.0 * scale) * 0.5 + 1.0, UI_WHITE, scale, true));
 }
 
-/// The rows of a page laid out: each widget's box and key.
-fn page_boxes(cat: usize, w: f32) -> Vec<(SetupBox, Key, (usize, usize))> {
+/// The top of a page's scrolling part, and its bottom on a screen `h` high.
+const PAGE_TOP: f32 = 40.0;
+
+fn page_bottom(h: f32) -> f32 {
+    h - 33.0
+}
+
+/// One thing on a page, laid out.
+#[derive(Clone, Debug)]
+enum PageItem {
+    /// A setting, and where it is (row, column).
+    Key(Key, (usize, usize)),
+    Header(&'static str),
+    Note(Vec<String>),
+    /// A despawn animation of the list (its slot).
+    Anim(usize),
+}
+
+/// What `view` shows, laid out (before scrolling): each thing's box. Returns the boxes and the
+/// height of it all.
+fn page_items(view: MenuView, s: &Settings, w: f32) -> (Vec<(SetupBox, PageItem)>, f32) {
     let cx = (w * 0.5).round();
     let mut out = Vec::new();
-    for (r, row) in category_rows(cat).iter().enumerate() {
-        let y = 44.0 + 25.0 * r as f32;
-        if row.len() == 1 {
-            out.push((SetupBox { x: cx - 155.0, y, w: 310.0, h: 20.0 }, row[0], (r, 0)));
-        } else {
-            for (c, k) in row.iter().enumerate() {
-                out.push((SetupBox { x: cx - 155.0 + 160.0 * c as f32, y, w: 150.0, h: 20.0 }, *k, (r, c)));
+    let mut y = PAGE_TOP + 4.0;
+    let rows = match view {
+        MenuView::Page(ANIM_PAGE) => {
+            for slot in anim_slots(s) {
+                out.push((SetupBox { x: cx - 110.0, y, w: 220.0, h: 20.0 }, PageItem::Anim(slot)));
+                y += 24.0;
+            }
+            return (out, y - PAGE_TOP);
+        }
+        MenuView::Page(cat) => page_rows(cat),
+        MenuView::Anim(_) => {
+            use Key::*;
+            vec![Row::Keys(vec![AnimMotion]), Row::Keys(vec![AnimParticle]), Row::Keys(vec![AnimDuration]), Row::Keys(vec![AnimAmount])]
+        }
+        _ => Vec::new(),
+    };
+    for (r, row) in rows.into_iter().enumerate() {
+        match row {
+            Row::Keys(keys) => {
+                if keys.len() == 1 {
+                    out.push((SetupBox { x: cx - 155.0, y, w: 310.0, h: 20.0 }, PageItem::Key(keys[0], (r, 0))));
+                } else {
+                    for (c, k) in keys.iter().enumerate() {
+                        out.push((SetupBox { x: cx - 155.0 + 160.0 * c as f32, y, w: 150.0, h: 20.0 }, PageItem::Key(*k, (r, c))));
+                    }
+                }
+                y += 25.0;
+            }
+            Row::Header(t) => {
+                out.push((SetupBox { x: cx - 155.0, y: y + 2.0, w: 310.0, h: 14.0 }, PageItem::Header(t)));
+                y += 20.0;
+            }
+            Row::Note(t) => {
+                let lines = ui_wrap(t, 300.0);
+                let hh = 10.0 * lines.len() as f32 + 4.0;
+                out.push((SetupBox { x: cx - 155.0, y, w: 310.0, h: hh }, PageItem::Note(lines)));
+                y += hh + 4.0;
             }
         }
     }
-    out
+    (out, y - PAGE_TOP)
 }
 
-fn page_footer(w: f32, h: f32) -> [SetupBox; 3] {
+/// How far a page can scroll.
+fn page_max_scroll(view: MenuView, s: &Settings, w: f32, h: f32) -> f32 {
+    let (_, content) = page_items(view, s, w);
+    (content + 4.0 - (page_bottom(h) - PAGE_TOP)).max(0.0)
+}
+
+/// The things of a page where they are now (scrolled), with only those that show.
+fn page_boxes(view: MenuView, s: &Settings, w: f32, h: f32, scroll: f32) -> Vec<(SetupBox, PageItem)> {
+    page_items(view, s, w)
+        .0
+        .into_iter()
+        .map(|(mut b, it)| {
+            b.y -= scroll;
+            (b, it)
+        })
+        .filter(|(b, _)| b.y + b.h > PAGE_TOP && b.y < page_bottom(h))
+        .collect()
+}
+
+/// A footer button's job.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Foot {
+    Reset,
+    Gravity,
+    /// More choices (not in Horizon Physics: shown greyed).
+    Customize,
+    Create,
+    Replay,
+    Done,
+}
+
+/// The buttons under a page.
+fn page_footer(view: MenuView, w: f32, h: f32) -> Vec<(SetupBox, Foot)> {
     let cx = (w * 0.5).round();
-    [-130.0, -40.0, 50.0].map(|dx| SetupBox { x: cx + dx, y: h - 28.0, w: 80.0, h: 20.0 })
+    let y = h - 28.0;
+    let three = |middle: Foot| vec![
+        (SetupBox { x: cx - 130.0, y, w: 80.0, h: 20.0 }, Foot::Reset),
+        (SetupBox { x: cx - 40.0, y, w: 80.0, h: 20.0 }, middle),
+        (SetupBox { x: cx + 50.0, y, w: 80.0, h: 20.0 }, Foot::Done),
+    ];
+    let two = vec![(SetupBox { x: cx - 80.0, y, w: 75.0, h: 20.0 }, Foot::Reset), (SetupBox { x: cx + 5.0, y, w: 75.0, h: 20.0 }, Foot::Done)];
+    match view {
+        MenuView::Page(0) => three(Foot::Gravity),
+        MenuView::Page(1) | MenuView::Page(2) => three(Foot::Customize),
+        MenuView::Page(ANIM_PAGE) => {
+            let mut f = vec![
+                (SetupBox { x: cx - 155.0, y, w: 70.0, h: 20.0 }, Foot::Reset),
+                (SetupBox { x: cx - 75.0, y, w: 150.0, h: 20.0 }, Foot::Create),
+                (SetupBox { x: cx + 85.0, y, w: 70.0, h: 20.0 }, Foot::Done),
+            ];
+            f.push((SetupBox { x: 6.0, y, w: 60.0, h: 20.0 }, Foot::Replay));
+            f
+        }
+        _ => two,
+    }
+}
+
+fn foot_text(f: Foot, s: &Settings) -> String {
+    match f {
+        Foot::Reset => "RESET".into(),
+        Foot::Gravity => format!("Gravity: {}", GRAVITY[s.gravity as usize % 5].0),
+        Foot::Customize => "Customize".into(),
+        Foot::Create => "Create Animation".into(),
+        Foot::Replay => "REPLAY".into(),
+        Foot::Done => "Done".into(),
+    }
+}
+
+/// Whether a footer button does anything now.
+fn foot_active(f: Foot, s: &Settings) -> bool {
+    match f {
+        Foot::Customize => false,
+        Foot::Create => free_anim_slot(s).is_some(),
+        _ => true,
+    }
+}
+
+/// A slot for a new animation: the first free one after the mod's own, else any free one.
+fn free_anim_slot(s: &Settings) -> Option<usize> {
+    let free = |i: &usize| s.anim_used & (1 << i) == 0;
+    (BUILTIN_ANIMS.len()..ANIM_SLOTS).find(free).or_else(|| (0..BUILTIN_ANIMS.len()).find(free))
 }
 
 /// A page's widget: dark, a light line under it, its text; a slider has its handle.
@@ -5246,9 +6184,24 @@ fn page_widget(out: &mut Vec<SetupUi>, b: &SetupBox, text: &str, hover: bool, ha
         out.push(SetupUi::Rect { x: hx, y: b.y, w: 8.0, h: b.h, color: [170, 170, 170, 255] });
         out.push(SetupUi::Rect { x: hx + 1.0, y: b.y + 1.0, w: 6.0, h: b.h - 2.0, color: [92, 92, 92, 255] });
     }
-    let color = if active { UI_WHITE } else { [130, 130, 130, 255] };
+    let color = if active { UI_WHITE } else { GREY_TEXT };
     out.push(SetupUi::Text { text: text.to_string(), x: b.x + b.w * 0.5, y: b.y + (b.h - 8.0) * 0.5, color });
 }
+
+/// The pencil and the cross beside an animation of the list.
+fn anim_buttons(b: &SetupBox) -> (SetupBox, SetupBox) {
+    (SetupBox { x: b.x + b.w + 4.0, y: b.y, w: 20.0, h: 20.0 }, SetupBox { x: b.x + b.w + 28.0, y: b.y, w: 20.0, h: 20.0 })
+}
+
+/// Pixels of an icon, 2 GUI pixels each, on a 7 by 7 grid from (`x`, `y`).
+fn icon(out: &mut Vec<SetupUi>, x: f32, y: f32, cells: &[(u8, u8)], color: [u8; 4]) {
+    for &(cx, cy) in cells {
+        out.push(SetupUi::Rect { x: x + 2.0 * f32::from(cx), y: y + 2.0 * f32::from(cy), w: 2.0, h: 2.0, color });
+    }
+}
+
+const PENCIL: [(u8, u8); 11] = [(5, 0), (6, 1), (4, 1), (5, 2), (3, 2), (4, 3), (2, 3), (3, 4), (1, 4), (2, 5), (0, 6)];
+const CROSS: [(u8, u8); 13] = [(0, 0), (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (6, 0), (5, 1), (4, 2), (2, 4), (1, 5), (0, 6)];
 
 /// What the Physics Settings screen draws (Main and pages; the quick setup draws itself).
 pub fn menu_ui(m: &mut Menu, w: f32, h: f32, cursor: (f32, f32)) -> Vec<SetupUi> {
@@ -5310,24 +6263,68 @@ pub fn menu_ui(m: &mut Menu, w: f32, h: f32, cursor: (f32, f32)) -> Vec<SetupUi>
                 out.push(SetupUi::label(line.clone(), x0 + 10.0, top_y + 9.0 + 10.0 * k as f32, UI_WHITE, 1.0, true));
             }
         }
-        MenuView::Page(cat) => {
+        view @ (MenuView::Page(_) | MenuView::Anim(_)) => {
+            let max = page_max_scroll(view, &st, w, h);
+            m.page_scroll = m.page_scroll.clamp(0.0, max);
             out.push(SetupUi::Tiles { x: 0.0, y: 0.0, w, h, sprite: SP_BRICKS, size: 32.0, color: [74, 74, 74, 255] });
-            out.push(SetupUi::Rect { x: 0.0, y: 0.0, w, h: 40.0, color: [0, 0, 0, 70] });
-            out.push(SetupUi::Rect { x: 0.0, y: h - 33.0, w, h: 33.0, color: [0, 0, 0, 70] });
-            out.push(SetupUi::Text { text: CATEGORIES[cat].title.into(), x: (w * 0.5).round(), y: 22.0, color: UI_WHITE });
-            for (b, k, _) in page_boxes(cat, w) {
-                let handle = slider(k).map(|_| k.fraction(&st));
-                page_widget(&mut out, &b, &k.label(&st), b.has(cursor), handle, true);
-            }
-            let footer = page_footer(w, h);
-            let middle = match cat {
-                1 => "Customize",
-                _ => "Gravity",
+            out.push(SetupUi::Rect { x: 0.0, y: 0.0, w, h: PAGE_TOP, color: [0, 0, 0, 70] });
+            out.push(SetupUi::Rect { x: 0.0, y: page_bottom(h), w, h: h - page_bottom(h), color: [0, 0, 0, 70] });
+            let title = match view {
+                MenuView::Anim(slot) => format!("Edit Animation: {}", anim_name(&st, slot)),
+                MenuView::Page(cat) => CATEGORIES[cat].title.to_string(),
+                _ => String::new(),
             };
-            let middle_text = if middle == "Gravity" { format!("Gravity: {}", GRAVITY[st.gravity as usize % 5].0) } else { middle.to_string() };
-            page_widget(&mut out, &footer[0], "RESET", footer[0].has(cursor), None, true);
-            page_widget(&mut out, &footer[1], &middle_text, footer[1].has(cursor), None, middle == "Gravity");
-            page_widget(&mut out, &footer[2], "Done", footer[2].has(cursor), None, true);
+            out.push(SetupUi::Text { text: title, x: (w * 0.5).round(), y: 22.0, color: UI_WHITE });
+            let inside = cursor.1 >= PAGE_TOP && cursor.1 < page_bottom(h);
+            out.push(SetupUi::Clip { x: 0.0, y: PAGE_TOP, w, h: page_bottom(h) - PAGE_TOP });
+            for (b, item) in page_boxes(view, &st, w, h, m.page_scroll) {
+                match item {
+                    PageItem::Key(k, _) => {
+                        let handle = slider(k).map(|_| k.fraction(&st));
+                        page_widget(&mut out, &b, &k.label(&st), inside && b.has(cursor), handle, true);
+                    }
+                    PageItem::Header(t) => {
+                        out.push(SetupUi::Text { text: t.to_string(), x: b.x + b.w * 0.5, y: b.y + 3.0, color: UI_WHITE });
+                    }
+                    PageItem::Note(lines) => {
+                        for (i, line) in lines.iter().enumerate() {
+                            out.push(SetupUi::Text { text: line.clone(), x: b.x + b.w * 0.5, y: b.y + 2.0 + 10.0 * i as f32, color: NOTE_YELLOW });
+                        }
+                    }
+                    PageItem::Anim(slot) => {
+                        let chosen = st.anim as usize == slot;
+                        let hover = inside && b.has(cursor);
+                        if chosen {
+                            out.push(SetupUi::Rect { x: b.x - 1.0, y: b.y - 1.0, w: b.w + 2.0, h: b.h + 2.0, color: UI_WHITE });
+                            out.push(SetupUi::Rect { x: b.x, y: b.y, w: b.w, h: b.h, color: [0, 0, 0, 255] });
+                        } else {
+                            out.push(SetupUi::Rect { x: b.x, y: b.y, w: b.w, h: b.h, color: if hover { [40, 40, 44, 200] } else { [0, 0, 0, 120] } });
+                        }
+                        out.push(SetupUi::Text { text: anim_name(&st, slot), x: b.x + b.w * 0.5, y: b.y + 6.0, color: UI_WHITE });
+                        let (edit, remove) = anim_buttons(&b);
+                        for (bb, cells, color) in [(edit, &PENCIL[..], [235, 235, 235, 255]), (remove, &CROSS[..], [230, 60, 50, 255])] {
+                            let hov = inside && bb.has(cursor);
+                            out.push(SetupUi::Rect { x: bb.x, y: bb.y, w: bb.w, h: bb.h, color: if hov { [70, 70, 76, 220] } else { [20, 20, 24, 200] } });
+                            out.push(SetupUi::Rect { x: bb.x, y: bb.y + bb.h - 1.0, w: bb.w, h: 1.0, color: if hov { UI_WHITE } else { [200, 200, 200, 255] } });
+                            icon(&mut out, bb.x + 3.0, bb.y + 3.0, cells, color);
+                        }
+                    }
+                }
+            }
+            out.push(SetupUi::Unclip);
+            // The page goes on below: a scroll bar on its right.
+            if max > 0.0 {
+                let cx = (w * 0.5).round();
+                let (x, top, len) = (cx + 162.0, PAGE_TOP, page_bottom(h) - PAGE_TOP);
+                let thumb = (len * len / (len + max)).max(16.0);
+                let ty = top + (len - thumb) * (m.page_scroll / max);
+                out.push(SetupUi::Rect { x, y: top, w: 6.0, h: len, color: [0, 0, 0, 255] });
+                out.push(SetupUi::Rect { x, y: ty, w: 6.0, h: thumb, color: [128, 128, 128, 255] });
+                out.push(SetupUi::Rect { x, y: ty, w: 5.0, h: thumb - 1.0, color: [192, 192, 192, 255] });
+            }
+            for (b, f) in page_footer(view, w, h) {
+                page_widget(&mut out, &b, &foot_text(f, &st), b.has(cursor), None, foot_active(f, &st));
+            }
         }
     }
     out
@@ -5374,8 +6371,8 @@ pub fn menu_mouse(w: f32, h: f32, x: f32, y: f32, pressed: bool) -> MenuOut {
                 }
                 for i in 0..CATEGORIES.len() {
                     if tab_box(i, m.scroll, m.shown == i).has((x, y)) {
-                        if !category_rows(i).is_empty() {
-                            m.view = MenuView::Page(i);
+                        if !page_rows(i).is_empty() {
+                            m.go(MenuView::Page(i));
                             return MenuOut::Click;
                         }
                         return MenuOut::None;
@@ -5383,88 +6380,150 @@ pub fn menu_mouse(w: f32, h: f32, x: f32, y: f32, pressed: bool) -> MenuOut {
                 }
                 MenuOut::None
             }
-            MenuView::Page(cat) => {
-                let footer = page_footer(w, h);
-                if footer[0].has((x, y)) {
-                    update_settings(|s| {
-                        for row in category_rows(cat) {
-                            for k in row {
-                                k.reset(s);
-                            }
-                        }
-                    });
-                    return MenuOut::Click;
-                }
-                if footer[1].has((x, y)) {
-                    if cat != 1 {
-                        update_settings(|s| s.gravity = (s.gravity + 1) % 5);
-                        return MenuOut::Click;
-                    }
-                    return MenuOut::None;
-                }
-                if footer[2].has((x, y)) {
-                    m.view = MenuView::Main;
-                    return MenuOut::Click;
-                }
-                for (b, k, at) in page_boxes(cat, w) {
-                    if !b.has((x, y)) {
-                        continue;
-                    }
-                    if slider(k).is_some() {
-                        let t = (x - b.x - 4.0) / (b.w - 8.0);
-                        update_settings(|s| k.slide(s, t));
-                        m.drag = Some(at);
-                        return MenuOut::None;
-                    }
-                    update_settings(|s| k.press(s));
-                    return MenuOut::Click;
-                }
-                MenuOut::None
-            }
+            view @ (MenuView::Page(_) | MenuView::Anim(_)) => page_mouse(m, view, w, h, x, y),
         }
     })
+}
+
+/// A press on a settings page or the animation editor.
+fn page_mouse(m: &mut Menu, view: MenuView, w: f32, h: f32, x: f32, y: f32) -> MenuOut {
+    let st = settings();
+    for (b, f) in page_footer(view, w, h) {
+        if !b.has((x, y)) {
+            continue;
+        }
+        if !foot_active(f, &st) {
+            return MenuOut::None;
+        }
+        match f {
+            Foot::Reset => update_settings(|s| match view {
+                MenuView::Page(ANIM_PAGE) => {
+                    let d = Settings::default();
+                    s.anims = d.anims;
+                    s.anim_used = d.anim_used;
+                    s.anim = d.anim;
+                }
+                MenuView::Anim(slot) => s.anims[slot] = anim_default(slot),
+                MenuView::Page(cat) => {
+                    for row in category_rows(cat) {
+                        for k in row {
+                            k.reset(s);
+                        }
+                    }
+                }
+                _ => {}
+            }),
+            Foot::Gravity => update_settings(|s| s.gravity = (s.gravity + 1) % 5),
+            Foot::Customize => {}
+            Foot::Create => {
+                if let Some(slot) = free_anim_slot(&st) {
+                    update_settings(|s| {
+                        s.anim_used |= 1 << slot;
+                        s.anims[slot] = anim_default(slot);
+                    });
+                    set_anim_edit(slot);
+                    m.go(MenuView::Anim(slot));
+                }
+            }
+            Foot::Replay => replay_anim(),
+            Foot::Done => match view {
+                MenuView::Anim(_) => m.go(MenuView::Page(ANIM_PAGE)),
+                _ => m.go(MenuView::Main),
+            },
+        }
+        return MenuOut::Click;
+    }
+    if !(PAGE_TOP..page_bottom(h)).contains(&y) {
+        return MenuOut::None;
+    }
+    for (b, item) in page_boxes(view, &st, w, h, m.page_scroll) {
+        match item {
+            PageItem::Key(k, at) if b.has((x, y)) => {
+                if slider(k).is_some() {
+                    let t = (x - b.x - 4.0) / (b.w - 8.0);
+                    update_settings(|s| k.slide(s, t));
+                    m.drag = Some(at);
+                    return MenuOut::None;
+                }
+                update_settings(|s| k.press(s));
+                return MenuOut::Click;
+            }
+            PageItem::Anim(slot) => {
+                let (edit, remove) = anim_buttons(&b);
+                if edit.has((x, y)) {
+                    set_anim_edit(slot);
+                    m.go(MenuView::Anim(slot));
+                    return MenuOut::Click;
+                }
+                if remove.has((x, y)) {
+                    // The last one stays: something has to be used.
+                    if anim_slots(&st).len() > 1 {
+                        update_settings(|s| {
+                            s.anim_used &= !(1 << slot);
+                            if s.anim as usize == slot {
+                                s.anim = anim_slots(s).first().copied().unwrap_or(0) as u8;
+                            }
+                        });
+                    }
+                    return MenuOut::Click;
+                }
+                if b.has((x, y)) {
+                    update_settings(|s| s.anim = slot as u8);
+                    return MenuOut::Click;
+                }
+            }
+            _ => {}
+        }
+    }
+    MenuOut::None
 }
 
 /// The pointer moved with the button down: the slider being dragged follows it.
 pub fn menu_drag(w: f32, x: f32) {
     with_menu(|m| {
-        let (MenuView::Page(cat), Some(at)) = (m.view, m.drag) else {
+        let Some(at) = m.drag else {
             return;
         };
-        if let Some((b, k, _)) = page_boxes(cat, w).into_iter().find(|p| p.2 == at) {
-            let t = (x - b.x - 4.0) / (b.w - 8.0);
-            update_settings(|s| k.slide(s, t));
+        if !matches!(m.view, MenuView::Page(_) | MenuView::Anim(_)) {
+            return;
+        }
+        let st = settings();
+        for (b, item) in page_items(m.view, &st, w).0 {
+            if let PageItem::Key(k, here) = item
+                && here == at
+            {
+                let t = (x - b.x - 4.0) / (b.w - 8.0);
+                update_settings(|s| k.slide(s, t));
+                return;
+            }
         }
     });
 }
 
-/// The wheel: the category list scrolls.
+/// The wheel: the category list scrolls, or the page.
 pub fn menu_scroll(h: f32, amount: f32) {
-    with_menu(|m| {
-        if m.view == MenuView::Main {
-            m.scroll = (m.scroll - amount * 20.0).clamp(0.0, max_scroll(h));
-        }
+    with_menu(|m| match m.view {
+        MenuView::Main => m.scroll = (m.scroll - amount * 20.0).clamp(0.0, max_scroll(h)),
+        MenuView::Page(_) | MenuView::Anim(_) => m.page_scroll = (m.page_scroll - amount * 20.0).max(0.0),
+        MenuView::Setup => {}
     });
 }
 
-/// Escape: a page or the quick setup goes back to the menu, the menu to Options. Returns true
-/// when the screen closed.
+/// Escape: a page or the quick setup goes back to the menu (the editor to its list), the menu
+/// to Options. Returns true when the screen closed.
 pub fn menu_escape() -> bool {
-    with_menu(|m| {
-        if m.view == MenuView::Main {
+    with_menu(|m| match m.view {
+        MenuView::Main => {
             m.open = false;
             true
-        } else {
-            m.view = MenuView::Main;
-            m.drag = None;
+        }
+        MenuView::Anim(_) => {
+            m.go(MenuView::Page(ANIM_PAGE));
+            false
+        }
+        _ => {
+            m.go(MenuView::Main);
             false
         }
     })
-}
-
-impl Menu {
-    #[doc(hidden)]
-    pub fn for_test() -> Menu {
-        { let mut picture = SetupScene::new(CATEGORIES[0].scene, 3); picture.zoom = MENU_ZOOM; Menu { open: true, view: MenuView::Main, scroll: 0.0, drag: None, shown: 0, picture, clock: None } }
-    }
 }

@@ -22,8 +22,15 @@ fn draw_items(atlas: &HudAtlas, batch: &mut HudBatch, items: Vec<hp::SetupUi>, s
         .iter()
         .map(|n| if n.is_empty() { None } else { atlas.sprites.get(*n).map(|r| [r.u0, r.v0, r.u1, r.v1]) })
         .collect();
+    let mut clip: Option<(usize, [f32; 4])> = None;
     for item in items {
         match item {
+            hp::SetupUi::Clip { x, y, w, h } => clip = Some((batch.vertices.len(), [x, y, x + w, y + h])),
+            hp::SetupUi::Unclip => {
+                if let Some((start, r)) = clip.take() {
+                    batch.clip_since(start, r[0], r[1], r[2], r[3]);
+                }
+            }
             hp::SetupUi::Rect { x, y, w, h, color: c } => batch.fill(atlas, x, y, w, h, color(c)),
             hp::SetupUi::Gradient { x, y, w, h, top, bottom } => batch.fill_gradient(atlas, (x, y, w, h), color(top), color(bottom)),
             hp::SetupUi::Text { text, x, y, color: c } => {

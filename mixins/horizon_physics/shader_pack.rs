@@ -8,6 +8,14 @@ fn horizon_physics_shader_pack(game: &mut crate::game::Game<'_>) {
     }
     let on = game.native_on(hp::ID);
     let st = hp::settings();
+    sway::set_options(sway::SwayOptions {
+        leaves: on && st.sway_leaves,
+        vines: on && st.sway_vines,
+        water_plants: on && st.sway_water,
+        wave_height: (st.wave_height * 20.0).round() / 20.0,
+        sway: (st.sway_strength * 20.0).round() / 20.0,
+        foam: st.foam,
+    });
     let render = game.pack.render.clone();
     let key = std::sync::Arc::as_ptr(&render) as usize;
     let changed = sway::set(
@@ -15,7 +23,8 @@ fn horizon_physics_shader_pack(game: &mut crate::game::Game<'_>) {
         || render.sprite_layers.iter().map(|(n, l)| (n.as_str(), *l)).collect(),
         on && st.waves,
         on && st.plants,
-        st.wind() as f32,
+        // In steps of a tenth, so the weather's slow changes rebuild the pack only now and then.
+        ((st.wind() * 10.0).round() / 10.0) as f32,
     );
     if changed {
         game.native_shaders.stamp = None;

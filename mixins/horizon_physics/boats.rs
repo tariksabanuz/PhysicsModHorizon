@@ -10,7 +10,7 @@ fn horizon_physics_boats(
 ) -> ::core::ops::ControlFlow<()> {
     use horizon_client::native_horizon_physics as hp;
     use horizon_client_render::native_horizon_physics_sway as sway;
-    if !sway::waves_on() || !hp::builtin_running() || hp::BOATS.enter() {
+    if !sway::waves_on() || !hp::builtin_running() || !hp::settings().boats || hp::BOATS.enter() {
         return ::core::ops::ControlFlow::Continue(());
     }
     let start = out.len();
@@ -20,6 +20,7 @@ fn horizon_physics_boats(
     let water = |x: i32, y: i32, z: i32| facts.get(game.world.block(x, y, z)).fluid == horizon_client::blocks::Fluid::Water;
     let t = sway::water_time(game.world.game_time, alpha);
     let wind = sway::water_wind();
+    let height = sway::water_height();
     // Each boat: its centre (camera-relative), its lift and sideways move, and its turn.
     let mut moves: Vec<(glam::Vec3, glam::Vec3, glam::Quat)> = Vec::new();
     for b in &game.boats {
@@ -45,7 +46,7 @@ fn horizon_physics_boats(
         }
         let rel = pos - camera;
         let reach = sway::water_reach(rel.length());
-        let m = sway::water_motion(pos.x, pos.z, t, open, wind);
+        let m = sway::water_motion_with(pos.x, pos.z, t, open, wind, height);
         let riding = game.riding == Some(b.id);
         let lift = if riding {
             glam::Vec3::ZERO

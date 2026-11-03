@@ -25,6 +25,16 @@ fn horizon_physics_world(game: &crate::game::Game<'_>, camera: glam::DVec3, out:
         }
     }
     let facts = game.res.facts();
+    // The weather, for the wind's strength.
+    let (rain_level, thunder_level) = game.world.weather.levels(1.0);
+    hp::set_weather(rain_level, thunder_level);
+    // The Despawn Animation page's REPLAY: pieces in front of the player.
+    if hp::replay_wanted()
+        && let Some(p) = game.player.as_ref()
+        && let Some(r) = game.gui.atlas.sprites.get("block/stone")
+    {
+        hp::replay_at([p.position.x, p.position.y + 1.5, p.position.z], p.yaw, [r.u0, r.v0, r.u1, r.v1]);
+    }
     // Smoke: one layer of blocks around the camera each frame.
     if hp::smoke_on() {
         let (y, x0, x1, z0, z1) = hp::scan_layer([camera.x, camera.y, camera.z]);
@@ -68,6 +78,7 @@ fn horizon_physics_world(game: &crate::game::Game<'_>, camera: glam::DVec3, out:
     {
         use horizon_client_render::native_horizon_physics_sway as sway;
         sway::snow_world(game.dim as u64, game.world.layout().min_y());
+        sway::set_snow_depth(hp::snow_depth());
         if !hp::snow_on() {
             sway::snow_clear();
         } else {
@@ -121,8 +132,9 @@ fn horizon_physics_world(game: &crate::game::Game<'_>, camera: glam::DVec3, out:
             if let Some(p) = game.player.as_ref() {
                 hp::footstep([p.position.x, p.position.y, p.position.z], p.yaw, player_top);
             }
+            let mobs_too = hp::mob_trails_on();
             for m in &game.mobs {
-                if !m.on_ground || m.health <= 0.0 {
+                if !mobs_too || !m.on_ground || m.health <= 0.0 {
                     continue;
                 }
                 let at = m.position;
@@ -138,28 +150,57 @@ fn horizon_physics_world(game: &crate::game::Game<'_>, camera: glam::DVec3, out:
             }
         }
     }
-    // Rain splashing on the ground around the camera.
+    // Rain splashing on the ground around the camera, snow drifting down where it snows, and
+    // sand blown off dry ground in the wind.
     if hp::weather_on() {
-        let rain = game.world.weather.levels(1.0).0;
+        let st = hp::settings();
+        static SEED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0x9E37_79B9_7F4A_7C15);
+        let mut next = || {
+            let mut x = SEED.load(std::sync::atomic::Ordering::Relaxed);
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            SEED.store(x, std::sync::atomic::Ordering::Relaxed);
+            (x >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let rain = rain_level;
         if rain > 0.2 {
-            static SEED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0x9E37_79B9_7F4A_7C15);
-            let mut next = || {
-                let mut x = SEED.load(std::sync::atomic::Ordering::Relaxed);
-                x ^= x << 13;
-                x ^= x >> 7;
-                x ^= x << 17;
-                SEED.store(x, std::sync::atomic::Ordering::Relaxed);
-                (x >> 11) as f64 / (1u64 << 53) as f64
-            };
-            for _ in 0..(rain * 14.0) as usize {
+            let amount = f64::from(rain) * f64::from(st.rain_amount) * 2.8 + f64::from(thunder_level) * f64::from(st.thunder_amount) * 2.8;
+            for _ in 0..amount.round() as usize {
                 let x = camera.x + (next() - 0.5) * 24.0;
                 let z = camera.z + (next() - 0.5) * 24.0;
                 let (bx, bz) = (x.floor() as i32, z.floor() as i32);
                 let y = game.rain_height(bx, bz);
-                if (f64::from(y) - camera.y).abs() > 16.0 || game.precipitation(bx, y, bz) != Some(false) {
+                if (f64::from(y) - camera.y).abs() > 16.0 {
                     continue;
                 }
-                hp::rain_splash([x, f64::from(y), z]);
+                match game.precipitation(bx, y, bz) {
+                    Some(false) => hp::rain_splash([x, f64::from(y), z]),
+                    // Snow: a flake starts above, a little at a time (they live long).
+                    Some(true) if next() < 0.35 => {
+                        let top = (camera.y + 4.0 + next() * 8.0).max(f64::from(y) + 1.0);
+                        hp::snowflake([x, top, z]);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let wind = hp::wind_now();
+        if wind > 0.5 {
+            for _ in 0..(wind * 2.0).round() as usize {
+                let x = camera.x + (next() - 0.5) * 20.0;
+                let z = camera.z + (next() - 0.5) * 20.0;
+                let (bx, bz) = (x.floor() as i32, z.floor() as i32);
+                let y = game.rain_height(bx, bz);
+                if (f64::from(y) - camera.y).abs() > 12.0 || game.precipitation(bx, y, bz).is_some() {
+                    continue;
+                }
+                let red = match &*facts.get(game.world.block(bx, y - 1, bz)).name {
+                    "minecraft:sand" => false,
+                    "minecraft:red_sand" => true,
+                    _ => continue,
+                };
+                hp::sand_dust([x, f64::from(y), z], red);
             }
         }
     }

@@ -372,7 +372,7 @@ fn an_explosion_throws_its_blocks_outward() {
 fn smoke_rises_and_drifts_with_the_wind_sparks_bounce() {
     let w = Flat { pillar: None, water_above: false };
     let mut env = Env::default();
-    let st = Settings { wind: 2, ..Settings::default() };
+    let st = Settings { wind_clear: 2.4, ..Settings::default() };
     env.explode(v3(0.5, 65.0, 0.5), 3.0);
     let start: Vec<Puff> = env.puffs.clone();
     let mut t = 0.0;
@@ -478,6 +478,7 @@ fn cape_box(neck: V3) -> Vec<Vertex> {
 fn capes_hang_as_cloth_and_leads_become_ropes() {
     let w = Flat { pillar: None, water_above: false };
     clear();
+    update_settings(|s| s.cape_range = 128.0);
     let neck = v3(0.0, 65.5, 0.0);
     let mut out = Vec::new();
     let mut frames = 0;
@@ -845,14 +846,17 @@ fn sway_table_and_shader() {
     assert_eq!(s.layers, vec![(3, sway::WATER), (7, sway::LEAVES), (9, sway::PLANT)]);
     let w = sway::wgsl(&s).unwrap();
     assert!(w.contains("case 3u: { return 5u; }"));
-    assert!(!w.contains("7u: { return 1u"), "plants are off");
+    assert!(!w.contains("9u: { return 2u"), "plants are off");
+    assert!(w.contains("7u: { return 1u"), "leaves have their own switch");
     let entries = "struct HorizonMaterialOut {\n    @location(7) cylindrical: f32,\n}\nfn horizon_material_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32) {\n    let pos = position + origin;\n    out.cylindrical = max(length(pos.xz), abs(pos.y));\n}";
     let p = sway::patch(entries, "").unwrap();
     assert!(p.contains("horizon_physics_sway(position + origin, position, uv, layer)"));
     assert!(p.contains("out.hp_open = horizon_physics_open(position, layer);"));
     assert!(sway::patch("no anchor here", "").is_none());
+    sway::set_options(sway::SwayOptions { leaves: false, vines: false, water_plants: false, ..Default::default() });
     sway::set(1, || names.clone(), false, false, 1.0);
     assert!(sway::patch(entries, "").is_none(), "all off: the game's own shader");
+    sway::set_options(sway::SwayOptions::default());
     // For the WGSL check outside the tests.
     sway::set(1, || names.clone(), true, true, 2.4);
     std::fs::write("/tmp/hp_sway.wgsl", sway::wgsl(&sway::current().unwrap()).unwrap()).unwrap();
@@ -1263,6 +1267,8 @@ fn dump_items(out: &mut String, name: &str, items: Vec<SetupUi>, scenes: &[&Setu
             SetupUi::Text { text, x, y, color } => { let _ = writeln!(out, "T {x} {y} {} {} {} 1 0 {text}", color[0], color[1], color[2]); }
             SetupUi::Label { text, x, y, color, scale, left } => { let _ = writeln!(out, "T {x} {y} {} {} {} {scale} {} {text}", color[0], color[1], color[2], u8::from(left)); }
             SetupUi::Tiles { x, y, w, h, sprite, size, color } => { let _ = writeln!(out, "I {x} {y} {w} {h} {sprite} {size} {} {} {}", color[0], color[1], color[2]); }
+            SetupUi::Clip { x, y, w, h } => { let _ = writeln!(out, "K {x} {y} {w} {h}"); }
+            SetupUi::Unclip => { let _ = writeln!(out, "U"); }
             SetupUi::Scene { index, x, y, w: sw, h: sh } => {
                 let _ = writeln!(out, "C {x} {y} {sw} {sh}");
                 for q in scenes[index].quads(x + sw * 0.5, y + sh * 0.5, sw, sh) {
@@ -1323,9 +1329,31 @@ fn dump_setup_screens() {
         let items = menu_ui(&mut m, w, h, (40.0, tab_y + 10.0));
         dump_items(&mut out, &format!("menu_{}", cat.name.to_lowercase().replace(' ', "_").replace('&', "and")), items, &[&m.picture]);
     }
-    for (cat, name) in [(0usize, "page_general"), (1, "page_mobs"), (2, "page_blocks")] {
+    let pages: Vec<(MenuView, f32, &str)> = vec![
+        (MenuView::Page(0), 0.0, "page_general"),
+        (MenuView::Page(1), 0.0, "page_mobs"),
+        (MenuView::Page(2), 0.0, "page_blocks"),
+        (MenuView::Page(3), 0.0, "page_ocean"),
+        (MenuView::Page(4), 0.0, "page_dynamic"),
+        (MenuView::Page(5), 0.0, "page_cloth"),
+        (MenuView::Page(6), 0.0, "page_projectiles"),
+        (MenuView::Page(7), 0.0, "page_liquids"),
+        (MenuView::Page(8), 0.0, "page_snow"),
+        (MenuView::Page(9), 0.0, "page_sounds"),
+        (MenuView::Page(10), 0.0, "page_animations"),
+        (MenuView::Anim(1), 0.0, "page_animation_edit"),
+        (MenuView::Page(11), 0.0, "page_fire"),
+        (MenuView::Page(12), 0.0, "page_weather"),
+        (MenuView::Page(12), 120.0, "page_weather_scrolled"),
+        (MenuView::Page(13), 0.0, "page_collapse"),
+    ];
+    for (view, scroll, name) in pages {
         let mut m = Menu::for_test();
-        m.view = MenuView::Page(cat);
+        m.view = view;
+        m.page_scroll = scroll;
+        if let MenuView::Anim(slot) = view {
+            set_anim_edit(slot);
+        }
         let items = menu_ui(&mut m, w, h, (330.0, 95.0));
         dump_items(&mut out, name, items, &[&m.picture]);
     }
@@ -1378,4 +1406,213 @@ fn physics_settings_pages_change_the_settings() {
         assert!(texts.iter().any(|x| x == t), "{t} in {texts:?}");
     }
     assert!(ui_text_width("GENERAL") > 30.0);
+}
+
+#[test]
+fn every_settings_page_fits_and_survives_the_file() {
+    let s = Settings::default();
+    // Two side by side: each label fits its half.
+    for cat in 0..CATEGORIES.len() {
+        for row in category_rows(cat) {
+            if row.len() == 2 {
+                for k in row {
+                    let w = ui_text_width(&k.label(&s));
+                    assert!(w <= 146.0, "{} on page {cat} is {w} wide", k.label(&s));
+                }
+            }
+        }
+    }
+    // The photographed pages' labels, as the mod comes.
+    for (k, want) in [
+        (Key::Activation, "Activation Distance: 96,00"),
+        (Key::BlockLife, "Lifetime (Blocks): 4,00"),
+        (Key::ObjScale, "Physics Objects Scale: 1,00"),
+        (Key::BlockVar, "Lifetime Variance: 3,00"),
+        (Key::Anim, "Animation: default"),
+        (Key::CapeOn, "Entity Cloth Physics: ON"),
+        (Key::CapeRange, "Entity Cloth Range: 48,00"),
+        (Key::HideCape, "Hide Cloth when Armor equipped: OFF"),
+        (Key::ImpactVolume, "Physics Impact Volume: 1,00"),
+        (Key::WindVolume, "Wind Volume: 1,00"),
+        (Key::WindForces, "Wind Forces: ON"),
+        (Key::Weather, "Weather Particles: ON"),
+        (Key::RainAmount, "Rain Weather Particle Amount: 5"),
+        (Key::ThunderAmount, "Thunder Weather Particle Amount: 2"),
+        (Key::WindClear, "Clear Weather: 0,10"),
+        (Key::WindRain, "Rainy Weather: 1,00"),
+        (Key::WindThunder, "Thunder Weather: 1,40"),
+        (Key::OpRain, "Rain: 1,00"),
+        (Key::Collapse, "Collapse Blocks: ON"),
+        (Key::CollapseDrops, "Drop collapsed items: ON"),
+        (Key::CollapseTicks, "Collapse Speed (Ticks): 10"),
+        (Key::CollapseLimit, "Collapse Limit (Blocks): 100"),
+    ] {
+        assert_eq!(k.label(&s), want);
+    }
+    let mut t = Settings::default();
+    assert_eq!(Key::BlockPhysics.label(&t), "Block Physics: Crumbled");
+    Key::BlockPhysics.press(&mut t);
+    assert_eq!(Key::BlockPhysics.label(&t), "Block Physics: Fractured");
+    Key::BlockPhysics.press(&mut t);
+    assert_eq!(Key::BlockPhysics.label(&t), "Block Physics: Off");
+    assert!(!t.blocks);
+    // Everything, the animations too, survives the file.
+    t.activation = 40.0;
+    t.collapse_ticks = 0;
+    t.wind_thunder = 2.5;
+    t.hide_cape = true;
+    t.anim_used |= 1 << 8;
+    t.anims[8] = AnimDef { motion: 2, particle: 1, duration: 1.5, amount: 20 };
+    t.anim = 8;
+    assert_eq!(Settings::from_text(&t.to_text()), t);
+    // Bigger pieces, fewer of them.
+    assert!(Settings { obj_scale: 2.0, ..s }.pieces_per_block() < s.pieces_per_block());
+}
+
+#[test]
+fn the_wind_follows_the_weather() {
+    let s = Settings::default();
+    set_weather(0.0, 0.0);
+    assert!((s.wind() - 0.1).abs() < 1e-6);
+    set_weather(1.0, 0.0);
+    assert!((s.wind() - 1.0).abs() < 1e-6);
+    set_weather(1.0, 1.0);
+    assert!((s.wind() - 1.4).abs() < 1e-6);
+    assert_eq!(Settings { wind_forces: false, ..s }.wind(), 0.0);
+    set_weather(0.0, 0.0);
+}
+
+#[test]
+fn despawn_animations_move_the_pieces_and_puff() {
+    let a = |i: usize| BUILTIN_ANIMS[i].1;
+    // Shrink: full size until the end, nothing at the end.
+    assert_eq!(despawn_pose(&a(0), 5.0), (1.0, 0.0));
+    assert_eq!(despawn_pose(&a(0), 0.0).0, 0.0);
+    // Sink: down into the ground.
+    assert!(despawn_pose(&a(2), 0.0).1 < -0.5);
+    // Bounce: up in the middle of it.
+    assert!(despawn_pose(&a(6), 1.0).1 > 0.1);
+    // Pieces whose time is up leave where they were for the puffs.
+    let w = Flat { pillar: None, water_above: false };
+    let mut p = Physics::default();
+    let (c, h, verts) = box_mesh([0.0, 0.0, 0.0, 0.5, 0.5, 0.5], [0.0, 0.0, 1.0, 1.0], 0xFFFF_FFFF);
+    p.add(vec![Body::new(v3(0.5, 64.3, 0.5) + c, Quat::IDENTITY, h, verts)], Vec::new(), 0.5, None);
+    run(&mut p, &w, 1.0);
+    assert!(p.objects.is_empty());
+    assert_eq!(p.gone.len(), 1);
+    let mut env = Env::default();
+    env.despawn_puffs(&a(1), p.gone[0].0, p.gone[0].1);
+    assert!(!env.puffs.is_empty(), "portal puffs");
+    let mut env = Env::default();
+    env.despawn_puffs(&a(2), p.gone[0].0, p.gone[0].1);
+    assert!(!env.drops.is_empty(), "splash drops");
+}
+
+#[test]
+fn a_falling_block_lands_with_a_sound() {
+    let w = Flat { pillar: None, water_above: false };
+    let mut p = Physics::default();
+    let (c, h, verts) = box_mesh([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], [0.0, 0.0, 1.0, 1.0], 0xFFFF_FFFF);
+    p.add(vec![Body::new(v3(0.0, 70.0, 0.0) + c, Quat::IDENTITY, h, verts)], Vec::new(), 30.0, None);
+    let mut heard = 0;
+    for _ in 0..120 {
+        p.step(1.0 / 60.0, 20.0, &w);
+        heard += p.impacts.len();
+        p.impacts.clear();
+    }
+    assert!((1..=4).contains(&heard), "{heard} landings");
+}
+
+#[test]
+fn collapses_wait_their_ticks() {
+    queue_collapse([1, 2, 3], 0.0);
+    queue_collapse([4, 5, 6], 60.0);
+    assert_eq!(due_collapses(), vec![[1, 2, 3]]);
+    assert!(due_collapses().is_empty());
+    set_collapse_replay([1, 2, 3]);
+    assert!(!take_collapse_replay([9, 9, 9]));
+    assert!(take_collapse_replay([1, 2, 3]));
+    assert!(!take_collapse_replay([1, 2, 3]));
+}
+
+#[test]
+fn thrown_snowballs_shatter_into_pieces() {
+    use crate::native_horizon_physics_sway as sway;
+    sway::set_particle_catch(32);
+    let snow = vec!["minecraft:item/snowball".to_string()];
+    let apple = vec!["minecraft:item/apple".to_string()];
+    assert!(sway::catch_particle(None, Some(&snow), [0.0; 3], [0.0; 3]));
+    assert!(!sway::catch_particle(None, Some(&apple), [0.0; 3], [0.0; 3]));
+    sway::set_particle_catch(0);
+    let _ = sway::take_particles();
+}
+
+#[test]
+fn settings_pages_scroll_and_the_animation_list_works() {
+    let (w, h) = (640.0, 300.0);
+    let texts = |items: &[SetupUi]| -> Vec<String> { items.iter().filter_map(|u| match u { SetupUi::Text { text, .. } => Some(text.clone()), _ => None }).collect() };
+    // Weather: too long for the screen, it scrolls, with a bar.
+    let mut m = Menu::for_test();
+    m.view = MenuView::Page(12);
+    let top = menu_ui(&mut m, w, h, (0.0, 0.0));
+    let t = texts(&top);
+    assert!(t.iter().any(|x| x == "Wind Strength"));
+    assert!(!t.iter().any(|x| x == "Dust: 1,00"), "below the fold: {t:?}");
+    assert!(top.iter().any(|u| matches!(u, SetupUi::Clip { .. })));
+    m.page_scroll = 1000.0;
+    let low = menu_ui(&mut m, w, h, (0.0, 0.0));
+    assert!(texts(&low).iter().any(|x| x == "Dust: 1,00"));
+    assert!(m.page_scroll < 1000.0, "clamped");
+    // Sound: two footer buttons.
+    let mut m = Menu::for_test();
+    m.view = MenuView::Page(9);
+    let t = texts(&menu_ui(&mut m, w, h, (0.0, 0.0)));
+    assert!(t.iter().any(|x| x == "RESET") && t.iter().any(|x| x == "Done") && !t.iter().any(|x| x.starts_with("Gravity")));
+    // Despawn animations: the list, the chosen one in a white box.
+    let mut m = Menu::for_test();
+    m.view = MenuView::Page(ANIM_PAGE);
+    let items = menu_ui(&mut m, w, h, (0.0, 0.0));
+    let t = texts(&items);
+    for name in ["default", "portal", "splash", "vanish", "explosion", "poof", "bounce", "REPLAY", "Create Animation"] {
+        assert!(t.iter().any(|x| x == name), "{name} in {t:?}");
+    }
+    assert!(items.iter().any(|u| matches!(u, SetupUi::Rect { w: 222.0, color: [255, 255, 255, 255], .. })));
+}
+
+#[test]
+fn making_and_removing_a_despawn_animation() {
+    let (w, h) = (640.0, 300.0);
+    menu_open();
+    with_menu(|m| m.view = MenuView::Page(ANIM_PAGE));
+    assert_eq!(menu_mouse(w, h, 320.0, 280.0, true), MenuOut::Click, "Create Animation");
+    let slot = BUILTIN_ANIMS.len();
+    assert_eq!(menu_view(), MenuView::Anim(slot));
+    assert!(settings().anim_used & (1 << slot) != 0);
+    // The editor: Motion goes round.
+    let before = settings().anims[slot].motion;
+    menu_mouse(w, h, 320.0, 50.0, true);
+    assert_ne!(settings().anims[slot].motion, before);
+    assert_eq!(menu_mouse(w, h, 360.0, 280.0, true), MenuOut::Click, "Done");
+    assert_eq!(menu_view(), MenuView::Page(ANIM_PAGE));
+    // Choose it, then take it away: back to the first.
+    let y = 44.0 + 24.0 * slot as f32 + 8.0;
+    menu_mouse(w, h, 320.0, y, true);
+    assert_eq!(settings().anim as usize, slot);
+    menu_mouse(w, h, 320.0 - 110.0 + 220.0 + 38.0, y, true);
+    assert!(settings().anim_used & (1 << slot) == 0);
+    assert_eq!(settings().anim, 0);
+    assert!(!menu_escape());
+    assert_eq!(menu_view(), MenuView::Main);
+    menu_close();
+}
+
+#[test]
+fn page_notes_take_one_line() {
+    for cat in 0..CATEGORIES.len() {
+        for row in page_rows(cat) {
+            if let Row::Note(t) = row {
+                assert_eq!(ui_wrap(t, 300.0).len(), 1, "{t}");
+            }
+        }
+    }
 }

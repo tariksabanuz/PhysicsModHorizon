@@ -13,6 +13,10 @@ fn horizon_physics_cape(
     if !hp::capes_on() {
         return ::core::ops::ControlFlow::Continue(());
     }
+    // Cloth Settings' Hide Cloth when Armor equipped.
+    if hp::hide_cape_with_armor() && m.item_by_slot(horizon_world::player_inventory::EquipmentSlot::Chest).is_some() {
+        return ::core::ops::ControlFlow::Break(());
+    }
     let Some(model) = m.kind.layer("player#cape") else {
         return ::core::ops::ControlFlow::Continue(());
     };

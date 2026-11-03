@@ -110,7 +110,10 @@ pub mod mobs {
         }
         pub fn setup(m: &Mob, s: &State, poses: &mut Poses, a: &Animations) {}
     }
-    impl Mob { pub fn alive(&self) -> bool { self.health > 0.0 } }
+    impl Mob {
+        pub fn alive(&self) -> bool { self.health > 0.0 }
+        pub fn item_by_slot(&self, slot: horizon_world::player_inventory::EquipmentSlot) -> Option<String> { let _ = slot; None }
+    }
     pub struct MobData { pub animations: Animations }
     pub struct Part;
     pub struct ModelNormals;
@@ -330,6 +333,8 @@ pub mod game {
     pub struct UiState { pub options: crate::options_ui::OptionsUi }
     #[derive(Clone, Copy, PartialEq, Eq)]
     pub enum Screen { Title, Options }
+    pub struct Audio;
+    impl Audio { pub fn play(&mut self, event: &str, at: Option<[f64; 3]>, volume: f32, pitch: f32) { let _ = (event, at, volume, pitch); } }
     pub struct Game<'a> {
         res: std::sync::Arc<Resources>,
         gui: UiResources,
@@ -351,6 +356,7 @@ pub mod game {
         dragging: bool,
         screen: Screen,
         remote: Option<u32>,
+        audio: Audio,
         _l: std::marker::PhantomData<&'a ()>,
     }
     impl Game<'_> {

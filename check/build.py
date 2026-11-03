@@ -14,5 +14,6 @@ for tag, f, name in [('MOB','mob.rs','mob'),('PART','part.rs','part'),('DESTROY'
 (here / 'check.rs').write_text(t)
 subprocess.run(['rustc','--edition','2024','--crate-type','lib','--crate-name','glam','glam.rs','-o','/tmp/libglam.rlib'],cwd=here,check=True)
 subprocess.run(['rustc','--edition','2024','--crate-type','lib','--crate-name','naga','naga.rs','-o','/tmp/libnaga.rlib'],cwd=here,check=True)
-r = subprocess.run(['rustc','--extern','glam=/tmp/libglam.rlib','--extern','naga=/tmp/libnaga.rlib', '--edition', '2024', '--crate-type', 'lib', '--crate-name', 'horizon_client', 'check.rs', '-o', '/tmp/hp_check.rlib'], cwd=here, capture_output=True, text=True)
+subprocess.run(['rustc','--edition','2024','--crate-type','lib','--crate-name','horizon_world','hworld.rs','-o','/tmp/libhworld.rlib'],cwd=here,check=True)
+r = subprocess.run(['rustc','--extern','glam=/tmp/libglam.rlib','--extern','naga=/tmp/libnaga.rlib','--extern','horizon_world=/tmp/libhworld.rlib', '--edition', '2024', '--crate-type', 'lib', '--crate-name', 'horizon_client', 'check.rs', '-o', '/tmp/hp_check.rlib'], cwd=here, capture_output=True, text=True)
 print(r.stderr[-6000:]); sys.exit(r.returncode)
