@@ -778,7 +778,7 @@ pub fn snow_profile(x: f64, z: f64, c: [f64; 4], r: f64, d: f64) -> f64 {
     } else if q < 1.6 {
         // The lip: the snow pushed aside, a little above the surface.
         let t = (q - 1.0) / 0.6;
-        -d * 0.18 * (std::f64::consts::PI * t).sin()
+        -d * 0.3 * (std::f64::consts::PI * t).sin()
     } else {
         0.0
     }
@@ -803,7 +803,7 @@ pub fn snow_press(feet: [f64; 3], width: f64, dir: [f64; 2], top: impl Fn(i32, i
     }
     // As deep as a foot sinks in vanilla: a layer of snow stands an eighth of a block above what
     // the feet stand on (the thinnest layer: down to almost the ground).
-    let deepest = (height - 1.0 / 32.0).min(0.125);
+    let deepest = (height - 1.0 / 32.0).min(0.3).min(height * 0.65);
     let depth = deepest * f64::from(f32::from_bits(SNOW_DEPTH.load(std::sync::atomic::Ordering::Relaxed))).clamp(0.05, 1.0);
     if depth <= 0.005 {
         return false;
@@ -952,17 +952,22 @@ pub fn snow_top(origin: [f32; 3], y: f32, dent: &SnowDent, corners: &[SnowCorner
         let uv = [lerp(fx, fz, &|c| c.uv[0]), lerp(fx, fz, &|c| c.uv[1])];
         let sky = lerp(fx, fz, &|c| f32::from(c.light & 255)).round().clamp(0.0, 255.0) as u16;
         let block = lerp(fx, fz, &|c| f32::from(c.light >> 8)).round().clamp(0.0, 255.0) as u16;
-        // The slope: Minecraft's face shading (up 1, north and south 0.8, east and west 0.6).
+        // The slope, lit from a low sun: the side facing it stays bright, the far wall of a print
+        // falls into a soft blue shadow, and the bottom is darker still (as in thick snow).
         let dx = (h(i + 1, j) - h(i.saturating_sub(1), j)) / (step * if i == 0 || i == n { 1.0 } else { 2.0 });
         let dz = (h(i, j + 1) - h(i, j.saturating_sub(1))) / (step * if j == 0 || j == n { 1.0 } else { 2.0 });
         let len = (dx * dx + 1.0 + dz * dz).sqrt();
         let (nx, ny, nz) = (-dx / len, 1.0 / len, -dz / len);
-        let shade = ny * ny + nx * nx * 0.6 + nz * nz * 0.8;
+        let sun = [-0.45f32, 0.80, -0.40];
+        let sl = (sun[0] * sun[0] + sun[1] * sun[1] + sun[2] * sun[2]).sqrt();
+        let lit = ((nx * sun[0] + ny * sun[1] + nz * sun[2]) / sl).max(0.0) / (sun[1] / sl);
         let deep = (dent.depth[i * SNOW_PTS + j]).max(0.0);
-        let k = (shade * (1.0 - deep * 0.55)).clamp(0.35, 1.0);
+        let k = (0.50 + 0.50 * lit.min(1.0) - deep * 1.1).clamp(0.38, 1.0);
+        let cold = 1.0 - k;
+        let tint = [1.0 - cold * 0.55, 1.0 - cold * 0.28, 1.0];
         let mut color = 0u32;
-        for s in [0u32, 8, 16] {
-            let v = lerp(fx, fz, &|c| byte(c.color, s)) * k;
+        for (c, s) in [0u32, 8, 16].into_iter().enumerate() {
+            let v = lerp(fx, fz, &|q| byte(q.color, s)) * k * tint[c];
             color |= (v.round().clamp(0.0, 255.0) as u32) << s;
         }
         color |= corners[0].color & 0xff00_0000;

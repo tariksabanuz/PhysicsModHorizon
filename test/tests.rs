@@ -1105,7 +1105,7 @@ fn snow_gives_way_where_walked() {
     let at = |d: &sway::SnowDent, i: usize, j: usize| d.depth[i * pts + j];
     // Under the foot (x 0.25, z 0.25): pressed down, not through the snow.
     let deep = at(&b.1, 2, 2);
-    assert!((deep - 0.125).abs() < 1e-6, "an eighth of a block, as feet sink: {deep}");
+    assert!((deep - 0.24375).abs() < 1e-5, "a foot sinks well into thick snow: {deep}");
     // A lip pushed up somewhere around it.
     let lip = sway::snow_in_section(0, 0, 0).iter().chain(sway::snow_in_section(-1, 0, 0).iter())
         .chain(sway::snow_in_section(0, 0, -1).iter()).chain(sway::snow_in_section(-1, 0, -1).iter())
@@ -1128,7 +1128,7 @@ fn snow_gives_way_where_walked() {
     let quads = sway::snow_top([0.0, 0.375, 0.0], 0.375, &b.1, &[corner(0.0, 0.0), corner(0.0, 1.0), corner(1.0, 1.0), corner(1.0, 0.0)]);
     assert_eq!(quads.len(), 64 * 4);
     let low = quads.iter().map(|q| q.0[1]).fold(f32::MAX, f32::min);
-    assert!((low - (0.375 - 0.125)).abs() < 1e-4, "{low}");
+    assert!((low - (0.375 - 0.24375)).abs() < 1e-4, "{low}");
     let darkest = quads.iter().map(|q| q.3 & 255).min().unwrap();
     assert!(darkest < 230, "{darkest}");
     assert!(quads.iter().all(|q| q.3 >> 24 == 0xff), "keeps the alpha byte");
