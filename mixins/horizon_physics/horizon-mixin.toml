@@ -1,6 +1,6 @@
 [mod]
 id = "horizon_physics"
-version = "0.12.0"
+version = "0.12.1"
 priority = 100
 
 [compatibility]
@@ -359,7 +359,7 @@ bindings = [
 id = "catch"
 kind = "HEAD"
 cancellable = true
-target = "horizon_client_render::particles::Particles::add_with"
+target = "horizon_client_render::particles::ParticleEngine::add_with"
 helper = "catch.rs"
 bindings = [
   { name = "options", ty = "&ParticleOptions", value = "options" },
