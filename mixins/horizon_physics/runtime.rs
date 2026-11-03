@@ -19,7 +19,7 @@ use crate::mesher::Vertex;
 
 pub const ID: &str = "horizon_physics";
 pub const NAME: &str = "Horizon Physics";
-pub const VERSION: &str = "0.14.0";
+pub const VERSION: &str = "0.15.0";
 pub const DESCRIPTION: &str =
     "By tariksabanuz. Blocks crumble and blow apart, ragdolls, items, smoke, ropes, capes, liquids, waves and swaying plants.";
 
@@ -576,7 +576,7 @@ impl Settings {
                     "collapse_drops" => s.collapse_drops = on,
                     "collapse_ticks" => s.collapse_ticks = (f as u32).clamp(0, 100),
                     "collapse_limit" => s.collapse_limit = (f as u32).clamp(10, 1000),
-                    "wave_height" => s.wave_height = f.clamp(0.0, 3.0),
+                    "wave_height" => s.wave_height = f.clamp(0.0, 6.0),
                     "boats" => s.boats = on,
                     "foam" => s.foam = on,
                     "sway_leaves" => s.sway_leaves = on,
@@ -584,7 +584,7 @@ impl Settings {
                     "sway_water" => s.sway_water = on,
                     "sway_strength" => s.sway_strength = f.clamp(0.0, 3.0),
                     "plant_push" => s.plant_push = on,
-                    "wave_speed" => s.wave_speed = f.clamp(0.25, 3.0),
+                    "wave_speed" => s.wave_speed = f.clamp(0.25, 6.0),
                     "punch" => s.punch = on,
                     "banners" => s.banners = on,
                     "doors" => s.doors = on,
@@ -1966,6 +1966,20 @@ pub static RENDER: Guard = Guard::new();
 pub static BOATS: Guard = Guard::new();
 /// Set while the camera hook asks the game for its own camera.
 pub static CAMERA: Guard = Guard::new();
+/// Set while the player-model hook draws the player itself.
+pub static PLAYER_MODEL: Guard = Guard::new();
+
+static RIDER: Mutex<Option<[f64; 3]>> = Mutex::new(None);
+
+/// How far the boat the player rides is moved by the swell this frame (the camera hook sets
+/// it, the player model is moved by it too, so the player sits in the boat).
+pub fn set_rider_lift(lift: Option<[f64; 3]>) {
+    *RIDER.lock().unwrap_or_else(|e| e.into_inner()) = lift;
+}
+
+pub fn rider_lift() -> Option<[f64; 3]> {
+    *RIDER.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// A swinging door's panel (`sway::door_swings`): the box `from` of each half (lower with sprite
 /// `bottom`, upper with `top`), turned by `angle` radians about the hinge (`pivot`, x and z in
@@ -2361,11 +2375,26 @@ pub fn particle_catch() -> u8 {
     u8::from(st.crack) | u8::from(st.sprint) << 1 | u8::from(st.eat) << 2 | u8::from(st.item_break) << 3 | u8::from(st.block_particles) << 4 | u8::from(st.projectiles) << 5
 }
 
-/// A particle as a small physics piece (`uv` its sprite in the atlas), `v` in blocks a tick.
-pub fn spawn_bit(at: [f64; 3], v: [f64; 3], uv: [f32; 4], tint: u32) {
+/// The velocity Minecraft's `Particle` constructor gives a particle asked for `v` (blocks a
+/// tick): a little jitter, then turned into a short hop of its own speed, a tenth of a block a
+/// tick up. The sprint dust asks for (-4 vx, 1.5, -4 vz) and gets a hop, not a rocket.
+pub fn particle_spread(v: [f64; 3], rng: &mut Rng) -> [f64; 3] {
+    let mut d = [0.0; 3];
+    for (k, c) in d.iter_mut().enumerate() {
+        *c = v[k] + (rng.next() * 2.0 - 1.0) * 0.4;
+    }
+    let speed = (rng.next() + rng.next() + 1.0) * 0.15;
+    let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-6);
+    [d[0] / len * speed * 0.4, d[1] / len * speed * 0.4 + 0.1, d[2] / len * speed * 0.4]
+}
+
+/// A particle as a small physics piece (`uv` its sprite in the atlas), `v` in blocks a tick, as
+/// the game asked for it (`spread`: through `particle_spread`, as the game's particle would).
+pub fn spawn_bit(at: [f64; 3], v: [f64; 3], uv: [f32; 4], tint: u32, spread: bool) {
     let st = settings();
     with(|s| {
         let life = f64::from(st.particle_life) * 30.0 + s.physics.rng.range(0.0, f64::from(st.particle_var));
+        let v = if spread { particle_spread(v, &mut s.physics.rng) } else { v };
         let v = v3(v[0], v[1], v[2]) * 20.0;
         s.physics.spawn_bit(v3(at[0], at[1], at[2]), v, uv, tint, life.max(0.3));
     });
@@ -5670,9 +5699,9 @@ fn slider(k: Key) -> Option<(f32, f32, f32)> {
         Key::OpDust => (0.0, 1.0, 0.05),
         Key::CollapseTicks => (0.0, 100.0, 1.0),
         Key::CollapseLimit => (10.0, 1000.0, 10.0),
-        Key::WaveHeight => (0.0, 3.0, 0.05),
+        Key::WaveHeight => (0.0, 6.0, 0.05),
         Key::SwayStrength => (0.0, 3.0, 0.05),
-        Key::WaveSpeed => (0.25, 3.0, 0.05),
+        Key::WaveSpeed => (0.25, 6.0, 0.05),
         Key::LiquidAmount => (0.0, 3.0, 0.05),
         Key::SnowDepth => (0.1, 1.0, 0.05),
         Key::SmokeAmount => (0.0, 3.0, 0.05),
@@ -6077,6 +6106,14 @@ pub struct Menu {
     pub shown: usize,
     pub picture: SetupScene,
     clock: Option<std::time::Instant>,
+    /// How lit up each button is (0 to 1, easing towards the pointer), by button.
+    glow: HashMap<u32, f32>,
+    pub ui_clock: Option<std::time::Instant>,
+    /// Seconds since the view, and since the category shown, changed (things slide in).
+    age: f32,
+    about_age: f32,
+    /// No easing: every frame shows where things end (the tests).
+    pub instant: bool,
 }
 
 static MENU: Mutex<Option<Menu>> = Mutex::new(None);
@@ -6085,13 +6122,30 @@ impl Menu {
     fn new() -> Menu {
         let mut picture = SetupScene::new(CATEGORIES[0].scene, 3);
         picture.zoom = MENU_ZOOM;
-        Menu { open: false, view: MenuView::Main, scroll: 0.0, page_scroll: 0.0, drag: None, shown: 0, picture, clock: None }
+        Menu {
+            open: false,
+            view: MenuView::Main,
+            scroll: 0.0,
+            page_scroll: 0.0,
+            drag: None,
+            shown: 0,
+            picture,
+            clock: None,
+            glow: HashMap::new(),
+            ui_clock: None,
+            age: 0.0,
+            about_age: 0.0,
+            instant: false,
+        }
     }
 
     #[doc(hidden)]
     pub fn for_test() -> Menu {
         let mut m = Menu::new();
         m.open = true;
+        m.instant = true;
+        m.age = 10.0;
+        m.about_age = 10.0;
         m
     }
 
@@ -6100,7 +6154,38 @@ impl Menu {
         self.view = view;
         self.page_scroll = 0.0;
         self.drag = None;
+        self.age = 0.0;
     }
+
+    /// Seconds since the last frame drawn (none in the tests).
+    fn frame_dt(&mut self) -> f32 {
+        let now = std::time::Instant::now();
+        let dt = self.ui_clock.map_or(0.0, |c| now.duration_since(c).as_secs_f32()).min(0.1);
+        self.ui_clock = Some(now);
+        if self.instant { 10.0 } else { dt }
+    }
+
+    /// Button `id` lit up as far as it got towards `on` (eased, 0 to 1).
+    fn lit(&mut self, id: u32, on: bool, dt: f32) -> f32 {
+        let g = self.glow.entry(id).or_insert(0.0);
+        let target = if on { 1.0 } else { 0.0 };
+        *g += (target - *g) * (dt * 14.0).min(1.0);
+        if (*g - target).abs() < 0.002 {
+            *g = target;
+        }
+        ease(*g)
+    }
+}
+
+/// Smooth in and out, 0 to 1.
+fn ease(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Between colours `a` and `b`, `t` of the way.
+fn mix_rgba(a: [u8; 4], b: [u8; 4], t: f32) -> [u8; 4] {
+    std::array::from_fn(|k| (f32::from(a[k]) + (f32::from(b[k]) - f32::from(a[k])) * t.clamp(0.0, 1.0)).round() as u8)
 }
 
 /// Runs `f` on the Physics Settings screen, its picture moved on to now.
@@ -6125,6 +6210,7 @@ pub fn menu_open() {
     with_menu(|m| {
         m.open = true;
         m.go(MenuView::Main);
+        m.glow.clear();
     });
 }
 
@@ -6167,13 +6253,15 @@ const NOTE_YELLOW: [u8; 4] = [255, 255, 85, 255];
 const GREY_TEXT: [u8; 4] = [130, 130, 130, 255];
 
 /// A tab of the menu: its fill, the bar on its `left` or right edge, its name.
-fn menu_tab(out: &mut Vec<SetupUi>, b: &SetupBox, name: &str, bar: [u8; 4], left: bool, hover: bool) {
-    let fill = if hover { [70, 74, 86, 205] } else { [26, 30, 40, 185] };
+fn menu_tab(out: &mut Vec<SetupUi>, b: &SetupBox, name: &str, bar: [u8; 4], left: bool, lit: f32) {
+    let fill = mix_rgba([26, 30, 40, 185], [70, 74, 86, 205], lit);
     out.push(SetupUi::Rect { x: b.x, y: b.y, w: b.w, h: b.h, color: fill });
-    let bx = if left { b.x } else { b.x + b.w - 3.0 };
-    out.push(SetupUi::Rect { x: bx, y: b.y, w: 3.0, h: b.h, color: bar });
+    // The bar on its edge widens a little as it lights up.
+    let bw = 3.0 + lit;
+    let bx = if left { b.x } else { b.x + b.w - bw };
+    out.push(SetupUi::Rect { x: bx, y: b.y, w: bw, h: b.h, color: bar });
     let scale = 1.35;
-    let tx = if left { b.x + b.w - 7.0 - ui_text_width(name) * scale } else { b.x + 7.0 };
+    let tx = if left { b.x + b.w - 7.0 - ui_text_width(name) * scale - 2.0 * lit } else { b.x + 7.0 + 2.0 * lit };
     out.push(SetupUi::label(name, tx, b.y + (b.h - 8.0 * scale) * 0.5 + 1.0, UI_WHITE, scale, true));
 }
 
@@ -6327,15 +6415,20 @@ fn free_anim_slot(s: &Settings) -> Option<usize> {
 }
 
 /// A page's widget: dark, a light line under it, its text; a slider has its handle.
-fn page_widget(out: &mut Vec<SetupUi>, b: &SetupBox, text: &str, hover: bool, handle: Option<f32>, active: bool) {
-    let fill = if hover && active { [40, 40, 44, 215] } else { [6, 6, 8, 205] };
+fn page_widget(out: &mut Vec<SetupUi>, b: &SetupBox, text: &str, lit: f32, handle: Option<f32>, active: bool) {
+    let lit = if active { lit } else { 0.0 };
+    let fill = mix_rgba([6, 6, 8, 205], [40, 40, 44, 215], lit);
     out.push(SetupUi::Rect { x: b.x, y: b.y, w: b.w, h: b.h, color: fill });
-    let line = if hover && active { [255, 255, 255, 255] } else { [200, 200, 200, 255] };
-    out.push(SetupUi::Rect { x: b.x, y: b.y + b.h - 1.0, w: b.w, h: 1.0, color: line });
+    // The line under it lights up and grows from the middle out.
+    out.push(SetupUi::Rect { x: b.x, y: b.y + b.h - 1.0, w: b.w, h: 1.0, color: [200, 200, 200, 255] });
+    if lit > 0.0 {
+        let half = b.w * 0.5 * lit;
+        out.push(SetupUi::Rect { x: b.x + b.w * 0.5 - half, y: b.y + b.h - 1.0, w: half * 2.0, h: 1.0, color: [255, 255, 255, 255] });
+    }
     if let Some(t) = handle {
         let hx = b.x + t * (b.w - 8.0);
-        out.push(SetupUi::Rect { x: hx, y: b.y, w: 8.0, h: b.h, color: [170, 170, 170, 255] });
-        out.push(SetupUi::Rect { x: hx + 1.0, y: b.y + 1.0, w: 6.0, h: b.h - 2.0, color: [92, 92, 92, 255] });
+        out.push(SetupUi::Rect { x: hx, y: b.y, w: 8.0, h: b.h, color: mix_rgba([170, 170, 170, 255], [235, 235, 235, 255], lit) });
+        out.push(SetupUi::Rect { x: hx + 1.0, y: b.y + 1.0, w: 6.0, h: b.h - 2.0, color: mix_rgba([92, 92, 92, 255], [120, 120, 124, 255], lit) });
     }
     let color = if active { UI_WHITE } else { GREY_TEXT };
     out.push(SetupUi::Text { text: text.to_string(), x: b.x + b.w * 0.5, y: b.y + (b.h - 8.0) * 0.5, color });
@@ -6360,6 +6453,9 @@ const CROSS: [(u8, u8); 13] = [(0, 0), (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (
 pub fn menu_ui(m: &mut Menu, w: f32, h: f32, cursor: (f32, f32)) -> Vec<SetupUi> {
     let mut out = Vec::new();
     let st = settings();
+    let dt = m.frame_dt();
+    m.age += dt;
+    m.about_age += dt;
     match m.view {
         MenuView::Main | MenuView::Setup => {
             let hovered = (0..CATEGORIES.len()).find(|&i| tab_box(i, m.scroll, false).has(cursor) || tab_box(i, m.scroll, true).has(cursor) && m.shown == i);
@@ -6369,6 +6465,7 @@ pub fn menu_ui(m: &mut Menu, w: f32, h: f32, cursor: (f32, f32)) -> Vec<SetupUi>
                 m.shown = i;
                 m.picture = SetupScene::new(CATEGORIES[i].scene, 11 + i as u64);
                 m.picture.zoom = MENU_ZOOM;
+                m.about_age = 0.0;
             }
             let cat = &CATEGORIES[m.shown];
             let (top, low) = match cat.scene {
@@ -6380,30 +6477,40 @@ pub fn menu_ui(m: &mut Menu, w: f32, h: f32, cursor: (f32, f32)) -> Vec<SetupUi>
             out.push(SetupUi::Gradient { x: 0.0, y: 0.0, w, h, top, bottom: low });
             out.push(SetupUi::Scene { index: 0, x: 0.0, y: 0.0, w, h });
             for (i, c) in CATEGORIES.iter().enumerate() {
-                let hover = hovered == Some(i);
-                let b = tab_box(i, m.scroll, hover);
+                let lit = m.lit(1000 + i as u32, hovered == Some(i), dt);
+                let mut b = tab_box(i, m.scroll, false);
+                // Out it slides as it lights up; on opening, the tabs come in one after another.
+                b.w += 14.0 * lit;
+                b.x -= (1.0 - ease((m.age - i as f32 * 0.025) / 0.3)) * (TAB_W + 20.0);
                 if b.y + b.h < 0.0 || b.y > h {
                     continue;
                 }
-                let bar = match (c.kind, hover) {
-                    (2, _) => BAR_YELLOW,
-                    (1, _) => BAR_RED,
-                    (_, true) => BAR_GREEN,
-                    _ => BAR_LIGHT,
+                let bar = match c.kind {
+                    2 => BAR_YELLOW,
+                    1 => BAR_RED,
+                    _ => mix_rgba(BAR_LIGHT, BAR_GREEN, lit),
                 };
-                menu_tab(&mut out, &b, c.name, bar, false, hover);
+                menu_tab(&mut out, &b, c.name, bar, false, lit);
             }
             // The list goes on below: a small arrow says so.
             if m.scroll < max_scroll(h) {
                 out.push(SetupUi::label("v", 60.0, h - 12.0, UI_WHITE, 1.4, false));
             }
-            let (quick, back) = menu_buttons(w);
-            menu_tab(&mut out, &quick, "QUICK SETUP", BAR_LIGHT, true, quick.has(cursor));
-            menu_tab(&mut out, &back, "BACK", BAR_LIGHT, true, back.has(cursor));
+            let (mut quick, mut back) = menu_buttons(w);
+            let in_from_right = (1.0 - ease(m.age / 0.3)) * 100.0;
+            let (lq, lb) = (m.lit(2000, quick.has(cursor), dt), m.lit(2001, back.has(cursor), dt));
+            for (b, l) in [(&mut quick, lq), (&mut back, lb)] {
+                b.x += in_from_right - 10.0 * l;
+                b.w += 10.0 * l;
+            }
+            menu_tab(&mut out, &quick, "QUICK SETUP", mix_rgba(BAR_LIGHT, BAR_GREEN, lq), true, lq);
+            menu_tab(&mut out, &back, "BACK", mix_rgba(BAR_LIGHT, BAR_GREEN, lb), true, lb);
             // What the category is: a box at the bottom with its colour under it.
             let (x0, x1) = ((w * 0.236).round(), (w * 0.973).round());
             let lines = ui_wrap(cat.about, x1 - x0 - 20.0);
-            let bottom = h - 21.0;
+            // A new category's box rises a little into place and its text fades in.
+            let fade = ease(m.about_age / 0.22);
+            let bottom = h - 21.0 + (1.0 - fade) * 6.0;
             let top_y = bottom - 16.0 - 10.0 * lines.len() as f32;
             out.push(SetupUi::Rect { x: x0, y: top_y, w: x1 - x0, h: bottom - top_y, color: [24, 26, 32, 218] });
             let line_color = match cat.kind {
@@ -6413,7 +6520,9 @@ pub fn menu_ui(m: &mut Menu, w: f32, h: f32, cursor: (f32, f32)) -> Vec<SetupUi>
             };
             out.push(SetupUi::Rect { x: x0, y: bottom, w: x1 - x0, h: 3.0, color: line_color });
             for (k, line) in lines.iter().enumerate() {
-                out.push(SetupUi::label(line.clone(), x0 + 10.0, top_y + 9.0 + 10.0 * k as f32, UI_WHITE, 1.0, true));
+                let mut color = UI_WHITE;
+                color[3] = (255.0 * fade).round().max(8.0) as u8;
+                out.push(SetupUi::label(line.clone(), x0 + 10.0, top_y + 9.0 + 10.0 * k as f32, color, 1.0, true));
             }
         }
         view @ (MenuView::Page(_) | MenuView::Anim(_)) => {
@@ -6430,11 +6539,16 @@ pub fn menu_ui(m: &mut Menu, w: f32, h: f32, cursor: (f32, f32)) -> Vec<SetupUi>
             out.push(SetupUi::Text { text: title, x: (w * 0.5).round(), y: 22.0, color: UI_WHITE });
             let inside = cursor.1 >= PAGE_TOP && cursor.1 < page_bottom(h);
             out.push(SetupUi::Clip { x: 0.0, y: PAGE_TOP, w, h: page_bottom(h) - PAGE_TOP });
-            for (b, item) in page_boxes(view, &st, w, h, m.page_scroll) {
+            // On opening, the rows rise into place one after another.
+            let rise = |m: &Menu, k: usize| (1.0 - ease((m.age - k as f32 * 0.02) / 0.25)) * 12.0;
+            for (k, (mut b, item)) in page_boxes(view, &st, w, h, m.page_scroll).into_iter().enumerate() {
+                let hovered = inside && b.has(cursor);
+                b.y += rise(m, k);
                 match item {
-                    PageItem::Key(k, _) => {
-                        let handle = slider(k).map(|_| k.fraction(&st));
-                        page_widget(&mut out, &b, &k.label(&st), inside && b.has(cursor), handle, true);
+                    PageItem::Key(key, _) => {
+                        let handle = slider(key).map(|_| key.fraction(&st));
+                        let lit = m.lit(3000 + k as u32, hovered, dt);
+                        page_widget(&mut out, &b, &key.label(&st), lit, handle, true);
                     }
                     PageItem::Header(t) => {
                         out.push(SetupUi::Text { text: t.to_string(), x: b.x + b.w * 0.5, y: b.y + 3.0, color: UI_WHITE });
@@ -6446,20 +6560,21 @@ pub fn menu_ui(m: &mut Menu, w: f32, h: f32, cursor: (f32, f32)) -> Vec<SetupUi>
                     }
                     PageItem::Anim(slot) => {
                         let chosen = st.anim as usize == slot;
-                        let hover = inside && b.has(cursor);
-                        if chosen {
-                            out.push(SetupUi::Rect { x: b.x - 1.0, y: b.y - 1.0, w: b.w + 2.0, h: b.h + 2.0, color: UI_WHITE });
-                            out.push(SetupUi::Rect { x: b.x, y: b.y, w: b.w, h: b.h, color: [0, 0, 0, 255] });
-                        } else {
-                            out.push(SetupUi::Rect { x: b.x, y: b.y, w: b.w, h: b.h, color: if hover { [40, 40, 44, 200] } else { [0, 0, 0, 120] } });
+                        let lit = m.lit(5000 + slot as u32 * 3, hovered, dt);
+                        let pick = m.lit(5001 + slot as u32 * 3, chosen, dt);
+                        // The chosen one's white frame fades in round it.
+                        if pick > 0.0 {
+                            out.push(SetupUi::Rect { x: b.x - 1.0, y: b.y - 1.0, w: b.w + 2.0, h: b.h + 2.0, color: mix_rgba([255, 255, 255, 0], UI_WHITE, pick) });
                         }
+                        let fill = mix_rgba(mix_rgba([0, 0, 0, 120], [40, 40, 44, 200], lit), [0, 0, 0, 255], pick);
+                        out.push(SetupUi::Rect { x: b.x, y: b.y, w: b.w, h: b.h, color: fill });
                         out.push(SetupUi::Text { text: anim_name(&st, slot), x: b.x + b.w * 0.5, y: b.y + 6.0, color: UI_WHITE });
                         let (edit, remove) = anim_buttons(&b);
-                        for (bb, cells, color) in [(edit, &PENCIL[..], [235, 235, 235, 255]), (remove, &CROSS[..], [230, 60, 50, 255])] {
-                            let hov = inside && bb.has(cursor);
-                            out.push(SetupUi::Rect { x: bb.x, y: bb.y, w: bb.w, h: bb.h, color: if hov { [70, 70, 76, 220] } else { [20, 20, 24, 200] } });
-                            out.push(SetupUi::Rect { x: bb.x, y: bb.y + bb.h - 1.0, w: bb.w, h: 1.0, color: if hov { UI_WHITE } else { [200, 200, 200, 255] } });
-                            icon(&mut out, bb.x + 3.0, bb.y + 3.0, cells, color);
+                        for (n, (bb, cells, color)) in [(edit, &PENCIL[..], [235, 235, 235, 255]), (remove, &CROSS[..], [230, 60, 50, 255])].into_iter().enumerate() {
+                            let l = m.lit(6000 + slot as u32 * 2 + n as u32, inside && bb.has(cursor), dt);
+                            out.push(SetupUi::Rect { x: bb.x, y: bb.y, w: bb.w, h: bb.h, color: mix_rgba([20, 20, 24, 200], [70, 70, 76, 220], l) });
+                            out.push(SetupUi::Rect { x: bb.x, y: bb.y + bb.h - 1.0, w: bb.w, h: 1.0, color: mix_rgba([200, 200, 200, 255], UI_WHITE, l) });
+                            icon(&mut out, bb.x + 3.0, bb.y + 3.0 - l, cells, color);
                         }
                     }
                 }
@@ -6475,8 +6590,9 @@ pub fn menu_ui(m: &mut Menu, w: f32, h: f32, cursor: (f32, f32)) -> Vec<SetupUi>
                 out.push(SetupUi::Rect { x, y: ty, w: 6.0, h: thumb, color: [128, 128, 128, 255] });
                 out.push(SetupUi::Rect { x, y: ty, w: 5.0, h: thumb - 1.0, color: [192, 192, 192, 255] });
             }
-            for (b, f) in page_footer(view, w, h) {
-                page_widget(&mut out, &b, &foot_text(f, &st), b.has(cursor), None, foot_active(f, &st));
+            for (j, (b, f)) in page_footer(view, w, h).into_iter().enumerate() {
+                let lit = m.lit(4000 + j as u32, b.has(cursor), dt);
+                page_widget(&mut out, &b, &foot_text(f, &st), lit, None, foot_active(f, &st));
             }
         }
     }

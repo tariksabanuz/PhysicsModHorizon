@@ -1010,6 +1010,9 @@ pub struct ParticleBit {
     pub tint: u32,
     pub at: [f64; 3],
     pub v: [f64; 3],
+    /// Whether the game's particle would have spread its velocity (Particle's constructor does,
+    /// for the dust of sprinting, the cracks of mining and other block particles).
+    pub spread: bool,
 }
 
 static BITS: Mutex<Vec<ParticleBit>> = Mutex::new(Vec::new());
@@ -1055,7 +1058,8 @@ pub fn catch_particle(block: Option<&(String, u32)>, item: Option<&Vec<String>>,
     if q.len() >= 256 {
         return true;
     }
-    q.push(ParticleBit { sprite, tint, at, v });
+    let spread = matches!(src, SRC_CRACK | SRC_SPRINT) || (src != SRC_EAT && src != SRC_ITEM_BREAK && block.is_some());
+    q.push(ParticleBit { sprite, tint, at, v, spread });
     true
 }
 

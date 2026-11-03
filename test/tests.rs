@@ -1678,3 +1678,36 @@ fn a_banner_flag_bends_but_its_pole_stays() {
         assert!(moved(i) < 1e-6, "the pole stays");
     }
 }
+
+#[test]
+fn sprint_dust_hops_instead_of_flying_off() {
+    let mut rng = Rng::new(7);
+    for _ in 0..200 {
+        // What sprinting asks for (blocks a tick): back along the run, 1.5 up.
+        let v = particle_spread([-0.4, 1.5, 0.0], &mut rng);
+        let speed = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt() * 20.0;
+        assert!(speed < 6.0, "{speed} blocks a second");
+        assert!(v[1] * 20.0 > 0.5, "it hops up a little");
+    }
+}
+
+#[test]
+fn menu_buttons_light_up_smoothly() {
+    let (w, h) = (640.0, 345.0);
+    let mut m = Menu::for_test();
+    m.instant = false;
+    let tab = (40.0, 25.0 + 30.0 + 10.0);
+    let fills = |items: &[SetupUi]| -> Vec<[u8; 4]> { items.iter().filter_map(|u| match u { SetupUi::Rect { color, .. } => Some(*color), _ => None }).collect() };
+    let _ = menu_ui(&mut m, w, h, (300.0, 300.0));
+    // Pointer on MOBS: a moment later the tab is lit part of the way, later all the way.
+    m.ui_clock = Some(std::time::Instant::now() - std::time::Duration::from_millis(30));
+    let early = fills(&menu_ui(&mut m, w, h, tab));
+    let green = |f: &[[u8; 4]]| f.iter().filter(|c| **c == [110, 232, 40, 255]).count();
+    let before = green(&early);
+    for _ in 0..30 {
+        m.ui_clock = Some(std::time::Instant::now() - std::time::Duration::from_millis(30));
+        let _ = menu_ui(&mut m, w, h, tab);
+    }
+    let late = fills(&menu_ui(&mut m, w, h, tab));
+    assert_eq!(green(&late), before + 1, "its bar green in the end, not at once");
+}

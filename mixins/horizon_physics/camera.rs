@@ -4,11 +4,16 @@
 fn horizon_physics_camera(game: &mut crate::game::Game<'_>, partial: f32) -> ::core::ops::ControlFlow<Option<(glam::DVec3, f32, f32)>> {
     use horizon_client::native_horizon_physics as hp;
     use horizon_client_render::native_horizon_physics_sway as sway;
-    if !sway::waves_on() || !hp::settings().boats || hp::CAMERA.enter() {
+    if !sway::waves_on() || !hp::settings().boats {
+        hp::set_rider_lift(None);
+        return ::core::ops::ControlFlow::Continue(());
+    }
+    if hp::CAMERA.enter() {
         return ::core::ops::ControlFlow::Continue(());
     }
     let view = game.camera_view(partial);
     hp::CAMERA.leave();
+    hp::set_rider_lift(None);
     let Some((mut at, yaw, pitch)) = view else {
         return ::core::ops::ControlFlow::Break(None);
     };
@@ -47,7 +52,11 @@ fn horizon_physics_camera(game: &mut crate::game::Game<'_>, partial: f32) -> ::c
     if open > 0.0 {
         let t = sway::water_time(game.world.game_time, alpha);
         let m = sway::water_motion_with(pos.x, pos.z, t, open, sway::water_wind(), sway::water_height());
-        at += glam::DVec3::new(m[1], m[0] + 0.04, m[2]);
+        let lift = [m[1], m[0] + 0.04, m[2]];
+        at += glam::DVec3::new(lift[0], lift[1], lift[2]);
+        if riding.is_some() {
+            hp::set_rider_lift(Some(lift));
+        }
     }
     ::core::ops::ControlFlow::Break(Some((at, yaw, pitch)))
 }

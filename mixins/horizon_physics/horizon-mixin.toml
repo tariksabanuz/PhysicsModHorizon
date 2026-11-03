@@ -1,6 +1,6 @@
 [mod]
 id = "horizon_physics"
-version = "0.14.0"
+version = "0.15.0"
 priority = 100
 
 [compatibility]
@@ -92,6 +92,20 @@ helper = "camera.rs"
 bindings = [
   { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
   { name = "partial", ty = "f32", value = "partial" },
+]
+
+# The player's own model in a boat on the waves: moved with the boat and the camera.
+[[injection]]
+id = "player-model"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::perspective::Game<'_>::player_model_geometry"
+helper = "player_model.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "self" },
+  { name = "camera", ty = "glam::DVec3", value = "camera" },
+  { name = "alpha", ty = "f64", value = "alpha" },
+  { name = "out", ty = "&mut Vec<horizon_client::mesher::Vertex>", value = "&mut *out" },
 ]
 
 # ServerPlayerGameMode.destroyBlock, then what the broken block held up falls (trees, bridges).

@@ -544,6 +544,10 @@ pub mod game {
     pub mod perspective {
         use super::Game;
         impl Game<'_> {
+            pub(super) fn player_model_geometry(&self, camera: glam::DVec3, alpha: f64, out: &mut Vec<horizon_client::mesher::Vertex>) {
+                //PLAYER_MODEL//
+                if let ::core::ops::ControlFlow::Break(()) = __h_player_model(self, camera, alpha, &mut *out) { return; }
+            }
             pub(super) fn camera_view(&mut self, partial: f32) -> Option<(glam::DVec3, f32, f32)> {
                 //CAMERA//
                 if let ::core::ops::ControlFlow::Break(r) = __h_camera(&mut *self, partial) { return r; }

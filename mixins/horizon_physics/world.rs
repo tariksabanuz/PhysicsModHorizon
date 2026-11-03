@@ -21,7 +21,7 @@ fn horizon_physics_world(game: &crate::game::Game<'_>, camera: glam::DVec3, out:
     particles::set_particle_catch(hp::particle_catch());
     for b in particles::take_particles() {
         if let Some(r) = game.gui.atlas.sprites.get(&b.sprite) {
-            hp::spawn_bit(b.at, b.v, [r.u0, r.v0, r.u1, r.v1], b.tint);
+            hp::spawn_bit(b.at, b.v, [r.u0, r.v0, r.u1, r.v1], b.tint, b.spread);
         }
     }
     let facts = game.res.facts();
@@ -135,6 +135,8 @@ fn horizon_physics_world(game: &crate::game::Game<'_>, camera: glam::DVec3, out:
             let top = |x: i32, y: i32, z: i32| -> Option<f64> {
                 let state = game.world.block(x, y, z);
                 match &*facts.get(state).name {
+                    // A whole block of snow (or powder snow) gives way like a layer does.
+                    "minecraft:snow_block" | "minecraft:powder_snow" => Some(f64::from(y) + 1.0),
                     "minecraft:snow" => {
                         let layers = game
                             .pack
