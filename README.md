@@ -3,6 +3,17 @@
 A native mod for [Horizon](https://github.com/horizon-rust/horizon) (Minecraft Java 26.3 in Rust) that
 brings PhysicsMod-style physics to the client, written from scratch:
 
+- **Physics Settings**: Options gets a wide "Physics Settings..." button. It opens the mod's own
+  screen: a column of categories over a live picture of the one under the pointer (a pig
+  dying, a block shattering, the sea with a boat, a snowfield with a trail, a burning tree...), what
+  each does in a box at the bottom, and Quick Setup and Back. A category opens its page of switches
+  and sliders: General (max objects, simulation speed, item physics, which of the game's particles
+  become pieces, their lifetime), Mobs (mob physics, lifetime, despawn animation, ragdoll joints
+  that tear, the ragdoll limit), Blocks, Ocean, Dynamic Blocks, Cloth, Liquids, Snow, Animations,
+  Fire & Smoke, Weather and Collapse. Its pictures use the game's own textures.
+- **Particle physics**: the game's particles as small physics pieces of their own sprite: the
+  cracks of mining, the dust of sprinting, the crumbs of eating, a broken tool, and every other
+  block particle (each can be turned off).
 - **Quick setup**: the first time the game starts with the mod, the title screen shows a quick setup:
   a page each for mobs, blocks, weather and collapsing structures, each choice a live preview of
   itself (a pig dying, a stone block breaking, rain on a pond, a cliff coming down) made by the

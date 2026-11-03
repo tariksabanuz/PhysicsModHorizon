@@ -870,3 +870,129 @@ pub fn snow_top(origin: [f32; 3], y: f32, dent: &SnowDent, corners: &[SnowCorner
     }
     out
 }
+
+// ---------------------------------------------------------------------------------------------
+// The game's particles as physics pieces. The renderer's particle engine hands each particle it
+// would add here first (`catch_particle`); what the settings want as pieces waits in a queue
+// for the game side, which makes them small physics pieces of the particle's sprite. Which
+// kind a particle is comes from where it was made: the game's crack, sprint and eat functions
+// set the source around their own work (`particle_source`).
+
+/// Where the particles now being made come from.
+pub const SRC_OTHER: u8 = 0;
+pub const SRC_CRACK: u8 = 1;
+pub const SRC_SPRINT: u8 = 2;
+pub const SRC_EAT: u8 = 3;
+pub const SRC_ITEM_BREAK: u8 = 4;
+/// The game's own break particles, kept (Settings: MC break particles).
+pub const SRC_KEEP: u8 = 5;
+
+static SOURCE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(SRC_OTHER);
+/// Which kinds become pieces: bit 0 crack, 1 sprint, 2 eat, 3 item break, 4 other block
+/// particles.
+static CATCH: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// One particle to make a piece of: its sprite (HUD atlas name) and tint, where, its velocity
+/// (blocks a tick).
+#[derive(Clone, Debug)]
+pub struct ParticleBit {
+    pub sprite: String,
+    pub tint: u32,
+    pub at: [f64; 3],
+    pub v: [f64; 3],
+}
+
+static BITS: Mutex<Vec<ParticleBit>> = Mutex::new(Vec::new());
+
+pub fn particle_source() -> u8 {
+    SOURCE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Sets where particles come from; returns what it was (to put back).
+pub fn set_particle_source(src: u8) -> u8 {
+    SOURCE.swap(src, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Which kinds the settings want as pieces (see `CATCH`).
+pub fn set_particle_catch(mask: u8) {
+    CATCH.store(mask, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A particle the engine is about to add: true when it became a piece instead.
+pub fn catch_particle(block: Option<&(String, u32)>, item: Option<&Vec<String>>, at: [f64; 3], v: [f64; 3]) -> bool {
+    let mask = CATCH.load(std::sync::atomic::Ordering::Relaxed);
+    if mask == 0 {
+        return false;
+    }
+    let src = particle_source();
+    let wanted = match src {
+        SRC_CRACK => mask & 1 != 0,
+        SRC_SPRINT => mask & 2 != 0,
+        SRC_EAT => mask & 4 != 0,
+        SRC_ITEM_BREAK => mask & 8 != 0,
+        SRC_KEEP => false,
+        _ => mask & 16 != 0 && block.is_some(),
+    };
+    if !wanted {
+        return false;
+    }
+    let (sprite, tint) = match (block, item) {
+        (Some((s, t)), _) => (s.clone(), *t),
+        (None, Some(layers)) if !layers.is_empty() => (layers[0].clone(), 0xFF_FFFF),
+        _ => return false,
+    };
+    let mut q = BITS.lock().unwrap_or_else(|e| e.into_inner());
+    if q.len() >= 256 {
+        return true;
+    }
+    q.push(ParticleBit { sprite, tint, at, v });
+    true
+}
+
+/// The pieces waiting to be made.
+pub fn take_particles() -> Vec<ParticleBit> {
+    std::mem::take(&mut *BITS.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+// ---------------------------------------------------------------------------------------------
+// Options' "Physics Settings..." button: the options page lays it out here (in the renderer),
+// the game's mouse hook finds it here.
+
+static PHYSICS_BUTTON: Mutex<Option<[f32; 4]>> = Mutex::new(None);
+static PHYSICS_WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+static IN_LAYOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the button shows (the mod is on).
+pub fn physics_button_wanted() -> bool {
+    PHYSICS_WANTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn set_physics_button_wanted(on: bool) {
+    PHYSICS_WANTED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// True when the layout hook is not inside its own call already (and now is).
+pub fn layout_enter() -> bool {
+    !IN_LAYOUT.swap(true, std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn layout_leave() {
+    IN_LAYOUT.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn set_physics_button(rect: [f32; 4]) {
+    *PHYSICS_BUTTON.lock().unwrap_or_else(|e| e.into_inner()) = Some(rect);
+}
+
+/// Whether (`x`, `y`) is on the button where it was last laid out.
+pub fn physics_button_at(x: f32, y: f32) -> bool {
+    PHYSICS_BUTTON
+        .lock()
+        .ok()
+        .and_then(|g| *g)
+        .is_some_and(|r| physics_wanted_and_in(r, x, y))
+}
+
+fn physics_wanted_and_in(r: [f32; 4], x: f32, y: f32) -> bool {
+    physics_button_wanted() && x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3]
+}

@@ -19,7 +19,12 @@
     "crates/horizon-client-render/src/mesher/fluid.rs": "5ad87e9c6d34134e131214de1545adee7bb3df9cb989ceeb03b01dc2db823ef0",
     "crates/horizon-client/src/game/boats.rs": "db59657f498626f8fc48106d58de70da26f630d52069f6dcb90a4eb5e19d5c3b",
     "crates/horizon-client/src/title.rs": "4f5d720156fea75724685d1075ce5f25e965ad1b0c01d5afda01abc734ab8e51",
-    "crates/horizon-client-render/src/mesher.rs": "835090e58e9e6e67ac032d0634072b671c5493b8f436a4d4138f1125bb0ac917"
+    "crates/horizon-client-render/src/mesher.rs": "835090e58e9e6e67ac032d0634072b671c5493b8f436a4d4138f1125bb0ac917",
+    "crates/horizon-client-render/src/options_ui.rs": "59a9dfcf54075806a0fc83191dd802f027b09cbb01141630674cc0d508b9ff9d",
+    "crates/horizon-client/src/game/options.rs": "9d5a8603e53bb3f2eb5bb018db3fa7381d7b666aaede556abc76d97beaef8d6e",
+    "crates/horizon-client/src/game/client_ambient.rs": "37589ab0fbaffc557e5923c34a4c57af722a22d32eb5f72c75550cc188f7ab66",
+    "crates/horizon-client/src/game/item_particles.rs": "691a461403f264212589a11b7bd1fd80665e8435f0009502a90ec0824daade62",
+    "crates/horizon-client-render/src/particles.rs": "a1ae3ab2562681dc2d5b43e50f7c2df2c07b0c9302664e5653fd0effae1ed159"
   },
   "horizon_repository": "https://github.com/horizon-rust/horizon",
   "horizon_mixins_repository": "https://github.com/horizon-rust/horizon-mixins",

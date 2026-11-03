@@ -6,12 +6,23 @@ fn horizon_physics_world(game: &crate::game::Game<'_>, camera: glam::DVec3, out:
     if !hp::loaded() {
         hp::load(crate::game::Game::native_config_dir().ok());
     }
-    let on = game.native_on(hp::ID);
+    use horizon_client_render::native_horizon_physics_sway as particles;
+    // PVP server compatibility: on a server, none of it.
+    let on = game.native_on(hp::ID) && !(hp::settings().pvp && game.remote.is_some());
     hp::set_enabled(on);
     if !on {
         hp::clear();
+        particles::set_particle_catch(0);
+        let _ = particles::take_particles();
         horizon_client_render::native_horizon_physics_sway::snow_clear();
         return;
+    }
+    // The game's particles that became pieces.
+    particles::set_particle_catch(hp::particle_catch());
+    for b in particles::take_particles() {
+        if let Some(r) = game.gui.atlas.sprites.get(&b.sprite) {
+            hp::spawn_bit(b.at, b.v, [r.u0, r.v0, r.u1, r.v1], b.tint);
+        }
     }
     let facts = game.res.facts();
     // Smoke: one layer of blocks around the camera each frame.

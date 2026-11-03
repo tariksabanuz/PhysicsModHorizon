@@ -192,8 +192,44 @@ pub mod hud {
         pub fn text(&mut self, atlas: &HudAtlas, text: &str, x: f32, y: f32, color: u32, shadow: bool) -> f32 { 0.0 }
         pub fn quad_3d(&mut self, p: [[f32; 3]; 4], uv: [[f32; 2]; 4], color: u32) {}
         pub fn depth_since(&mut self, start: usize, clip: [f32; 4]) {}
+        pub fn scale_since(&mut self, start: usize, cx: f32, cy: f32, sx: f32, sy: f32) {}
+        pub fn clip_since(&mut self, start: usize, x0: f32, y0: f32, x1: f32, y1: f32) {}
+        pub fn quad(&mut self, p: [[f32; 2]; 4], uv: [[f32; 2]; 4], color: u32) {}
     }
     pub fn rgba(r: u8, g: u8, b: u8, a: u8) -> u32 { 0 }
+}
+
+pub mod text {
+    pub struct Text;
+    impl Text { pub fn literal(s: impl Into<String>) -> Text { Text } }
+}
+
+pub mod settings {
+    pub struct Settings;
+}
+
+pub mod options_ui {
+    use crate::{settings::Settings, text::{self, Text}};
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum Page { Main, Video }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum Event { ButtonClick, Close }
+    enum Act { None, Done }
+    enum WKind { Button { label: Text, active: bool, act: Act } }
+    struct Widget { x: f32, y: f32, w: f32, h: f32, kind: WKind, list: bool }
+    fn button(x: f32, y: f32, w: f32, label: Text, act: Act) -> Widget {
+        Widget { x, y, w, h: 20.0, kind: WKind::Button { label, active: true, act }, list: false }
+    }
+    #[derive(Default)]
+    pub struct OptionsUi;
+    impl OptionsUi {
+        pub fn page(&self) -> Page { Page::Main }
+        fn layout(&mut self, s: &Settings, w: f32, h: f32) -> (Vec<Widget>, f32, f32, f32) {
+            //OPTIONS_LAYOUT//
+            if let ::core::ops::ControlFlow::Break(r) = __h_options_layout(&mut *self, s, w, h) { return r; }
+            (Vec::new(), 0.0, 0.0, 0.0)
+        }
+    }
 }
 
 pub mod title {
@@ -236,9 +272,7 @@ pub mod game {
     enum Dim { Overworld, Nether, End }
     pub struct Resources { facts: BlockFacts }
     impl Resources { fn facts(&self) -> &BlockFacts { &self.facts } }
-    pub struct Font;
-    impl Font { pub fn white(&self) -> Rect { Rect { u0: 0.0, v0: 0.0, u1: 0.0, v1: 0.0, w: 1, h: 1 } } }
-    pub struct HudAtlas { pub sprites: HashMap<String, Rect>, pub font: Font }
+    pub use crate::hud::HudAtlas;
     pub struct BlockState { pub name: String, pub properties: std::collections::BTreeMap<String, String> }
     pub struct Registry;
     impl Registry { pub fn state(&self, id: BlockStateId) -> Option<&BlockState> { None } }
@@ -293,6 +327,9 @@ pub mod game {
     pub struct GameLevel<'a>(std::marker::PhantomData<&'a ()>);
     pub struct Ticks;
     impl Behaviours { pub fn destroy_block(&self, level: &mut GameLevel<'_>, ticks: &mut Ticks, pos: BlockPos, drop: bool) -> bool { true } }
+    pub struct UiState { pub options: crate::options_ui::OptionsUi }
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub enum Screen { Title, Options }
     pub struct Game<'a> {
         res: std::sync::Arc<Resources>,
         gui: UiResources,
@@ -309,6 +346,11 @@ pub mod game {
         riding: Option<u32>,
         mobs: Vec<crate::mobs::Mob>,
         creative: bool,
+        cursor: (f32, f32),
+        ui: UiState,
+        dragging: bool,
+        screen: Screen,
+        remote: Option<u32>,
         _l: std::marker::PhantomData<&'a ()>,
     }
     impl Game<'_> {
@@ -378,6 +420,41 @@ pub mod game {
             pub(super) fn mob_team(&self, id: u32) -> Option<u32> { None }
             pub(super) fn mark_outline(&self, v: &[crate::mesher::Vertex], rgb: u32) {}
             pub(super) fn cull_entity_vertices(&self, v: &mut Vec<crate::mesher::Vertex>, start: usize) {}
+        }
+    }
+    pub mod options {
+        use super::{Game, Screen};
+        use horizon_client::{hud::HudBatch, options_ui::{Event, Page}};
+        pub enum KeyCode { Escape, A }
+        impl PartialEq for KeyCode { fn eq(&self, o: &Self) -> bool { true } }
+        type Result<T> = std::result::Result<T, String>;
+        impl Game<'_> {
+            pub(super) fn gui_size(&self) -> (f32, f32) { (640.0, 345.0) }
+            pub(super) fn handle_option_events(&mut self, events: Vec<Event>) -> Result<()> { Ok(()) }
+            pub(super) fn draw_options(&mut self, batch: &mut HudBatch) {
+                //OPTIONS_DRAW//
+                if let ::core::ops::ControlFlow::Break(()) = __h_options_draw(&mut *self, &mut *batch) { return; }
+            }
+            pub(super) fn options_mouse(&mut self, pressed: bool, right: bool) -> Result<()> {
+                //OPTIONS_MOUSE//
+                if let ::core::ops::ControlFlow::Break(r) = __h_options_mouse(&mut *self, pressed, right) { return r; }
+                Ok(())
+            }
+            pub(super) fn options_drag(&mut self) -> Result<()> {
+                //OPTIONS_DRAG//
+                if let ::core::ops::ControlFlow::Break(r) = __h_options_drag(&mut *self) { return r; }
+                Ok(())
+            }
+            pub(super) fn options_scroll(&mut self, amount: f32) -> Result<()> {
+                //OPTIONS_SCROLL//
+                if let ::core::ops::ControlFlow::Break(r) = __h_options_scroll(&mut *self, amount) { return r; }
+                Ok(())
+            }
+            pub(super) fn options_key(&mut self, key: KeyCode, text: Option<&str>) -> Result<()> {
+                //OPTIONS_KEY//
+                if let ::core::ops::ControlFlow::Break(r) = __h_options_key(&mut *self, key, text) { return r; }
+                Ok(())
+            }
         }
     }
     pub mod end {

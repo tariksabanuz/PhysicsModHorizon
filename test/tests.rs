@@ -1252,10 +1252,35 @@ fn the_previews_play_their_choice() {
     assert!(rain.quads(320.0, 172.0, 640.0, 345.0).iter().filter(|q| q.color[3] < 1.0).count() > 50, "rain and spray");
 }
 
+/// Writes a screen's items (and its previews' quads) for `render_setup.py`.
+fn dump_items(out: &mut String, name: &str, items: Vec<SetupUi>, scenes: &[&SetupScene]) {
+    use std::fmt::Write as _;
+    let _ = writeln!(out, "SHOT {name}");
+    for item in items {
+        match item {
+            SetupUi::Rect { x, y, w, h, color } => { let _ = writeln!(out, "R {x} {y} {w} {h} {} {} {} {}", color[0], color[1], color[2], color[3]); }
+            SetupUi::Gradient { x, y, w, h, top, bottom } => { let _ = writeln!(out, "G {x} {y} {w} {h} {} {} {} {} {} {}", top[0], top[1], top[2], bottom[0], bottom[1], bottom[2]); }
+            SetupUi::Text { text, x, y, color } => { let _ = writeln!(out, "T {x} {y} {} {} {} 1 0 {text}", color[0], color[1], color[2]); }
+            SetupUi::Label { text, x, y, color, scale, left } => { let _ = writeln!(out, "T {x} {y} {} {} {} {scale} {} {text}", color[0], color[1], color[2], u8::from(left)); }
+            SetupUi::Tiles { x, y, w, h, sprite, size, color } => { let _ = writeln!(out, "I {x} {y} {w} {h} {sprite} {size} {} {} {}", color[0], color[1], color[2]); }
+            SetupUi::Scene { index, x, y, w: sw, h: sh } => {
+                let _ = writeln!(out, "C {x} {y} {sw} {sh}");
+                for q in scenes[index].quads(x + sw * 0.5, y + sh * 0.5, sw, sh) {
+                    let mut line = format!("Q {} {} {} {} {}", q.sprite, q.color[0], q.color[1], q.color[2], q.color[3]);
+                    for k in 0..4 {
+                        let _ = write!(line, " {} {} {} {} {}", q.p[k][0], q.p[k][1], q.p[k][2], q.uv[k][0], q.uv[k][1]);
+                    }
+                    let _ = writeln!(out, "{line}");
+                }
+                let _ = writeln!(out, "E");
+            }
+        }
+    }
+}
+
 #[test]
 #[ignore]
 fn dump_setup_screens() {
-    use std::fmt::Write as _;
     let (w, h) = (640.0f32, 345.0f32);
     let shots: [(usize, (f32, f32), f64, &str); 14] = [
         (0, (5.0, 340.0), 2.4, "mobs"),
@@ -1275,7 +1300,6 @@ fn dump_setup_screens() {
     ];
     let mut out = String::new();
     for (page, cursor, t, name) in shots {
-        let _ = writeln!(out, "SHOT {name}");
         let scenes: Vec<SetupScene> = setup_page(page).1.iter().enumerate().map(|(i, c)| {
             let mut sc = SetupScene::new(c.1, 17 + i as u64 * 31);
             for _ in 0..(t * 60.0) as usize {
@@ -1283,25 +1307,75 @@ fn dump_setup_screens() {
             }
             sc
         }).collect();
-        for item in setup_ui(page, w, h, cursor) {
-            match item {
-                SetupUi::Rect { x, y, w, h, color } => { let _ = writeln!(out, "R {x} {y} {w} {h} {} {} {} {}", color[0], color[1], color[2], color[3]); }
-                SetupUi::Gradient { x, y, w, h, top, bottom } => { let _ = writeln!(out, "G {x} {y} {w} {h} {} {} {} {} {} {}", top[0], top[1], top[2], bottom[0], bottom[1], bottom[2]); }
-                SetupUi::Text { text, x, y, color } => { let _ = writeln!(out, "T {x} {y} {} {} {} {text}", color[0], color[1], color[2]); }
-                SetupUi::Scene { index, x, y, w: sw, h: sh } => {
-                    let _ = writeln!(out, "C {x} {y} {sw} {sh}");
-                    for q in scenes[index].quads(x + sw * 0.5, y + sh * 0.5, sw, sh) {
-                        let mut line = format!("Q {} {} {} {} {}", q.sprite, q.color[0], q.color[1], q.color[2], q.color[3]);
-                        for k in 0..4 {
-                            let _ = write!(line, " {} {} {} {} {}", q.p[k][0], q.p[k][1], q.p[k][2], q.uv[k][0], q.uv[k][1]);
-                        }
-                        let _ = writeln!(out, "{line}");
-                    }
-                    let _ = writeln!(out, "E");
-                }
-            }
+        let refs: Vec<&SetupScene> = scenes.iter().collect();
+        dump_items(&mut out, name, setup_ui(page, w, h, cursor), &refs);
+    }
+    // The Physics Settings screen: the menu with the pointer on each category, and two pages.
+    for (i, cat) in CATEGORIES.iter().enumerate() {
+        let mut m = Menu::for_test();
+        let tab_y = 25.0 + 30.0 * i as f32 - if i > 10 { 150.0 } else { 0.0 };
+        m.scroll = if i > 10 { 150.0 } else { 0.0 };
+        let items0 = menu_ui(&mut m, w, h, (40.0, tab_y + 10.0));
+        let _ = items0;
+        for _ in 0..(2.4 * 60.0) as usize {
+            m.picture.step(1.0 / 60.0);
         }
+        let items = menu_ui(&mut m, w, h, (40.0, tab_y + 10.0));
+        dump_items(&mut out, &format!("menu_{}", cat.name.to_lowercase().replace(' ', "_").replace('&', "and")), items, &[&m.picture]);
+    }
+    for (cat, name) in [(0usize, "page_general"), (1, "page_mobs"), (2, "page_blocks")] {
+        let mut m = Menu::for_test();
+        m.view = MenuView::Page(cat);
+        let items = menu_ui(&mut m, w, h, (330.0, 95.0));
+        dump_items(&mut out, name, items, &[&m.picture]);
     }
     std::fs::write("/tmp/setup_dump.txt", out).unwrap();
 }
 
+
+#[test]
+fn physics_settings_pages_change_the_settings() {
+    let (w, h) = (640.0, 345.0);
+    let mut s = Settings::default();
+    // Sliders land on their steps and stay in range.
+    Key::SimSpeed.slide(&mut s, 0.5);
+    assert!((s.sim_speed - 1.05).abs() < 1e-4, "{}", s.sim_speed);
+    Key::MaxObjects.slide(&mut s, 2.0);
+    assert_eq!(s.max_objects, 10000);
+    Key::RagdollLimit.slide(&mut s, 0.0);
+    assert_eq!(s.ragdoll_limit, 1);
+    // Switches and choices.
+    Key::Deaths.press(&mut s);
+    assert_eq!(Key::Deaths.label(&s), "Mob Physics: Blocky");
+    Key::Crack.press(&mut s);
+    assert_eq!(Key::Crack.label(&s), "Crack Particle Physics: OFF");
+    assert_eq!(Key::ParticleLife.label(&Settings::default()), "Lifetime (Particles): 0,10");
+    // Reset puts a page back.
+    for row in category_rows(0) {
+        for k in row {
+            k.reset(&mut s);
+        }
+    }
+    assert!(s.crack && s.sim_speed == 1.0 && s.max_objects == 1000);
+    // All the settings survive the file.
+    s.joint_force = 2.5;
+    s.anim = 1;
+    assert_eq!(Settings::from_text(&s.to_text()), s);
+    // The menu: every category has a page or says it is not in the mod yet; the box says what
+    // it is about in a few lines.
+    for (i, c) in CATEGORIES.iter().enumerate() {
+        assert_eq!(category_rows(i).is_empty(), c.kind != 0, "{}", c.name);
+        assert!(ui_wrap(c.about, 470.0).len() <= 3, "{}", c.name);
+    }
+    let mut m = Menu::for_test();
+    let items = menu_ui(&mut m, w, h, (40.0, 25.0 + 30.0 + 10.0));
+    assert_eq!(m.shown, 1, "the pointer on MOBS shows its picture");
+    assert!(items.iter().any(|u| matches!(u, SetupUi::Rect { color: [110, 232, 40, 255], .. })), "its green bar");
+    m.view = MenuView::Page(0);
+    let page = menu_ui(&mut m, w, h, (0.0, 0.0));
+    let texts: Vec<String> = page.iter().filter_map(|u| match u { SetupUi::Text { text, .. } => Some(text.clone()), _ => None }).collect();
+    for t in ["General Settings", "Physics Max Objects: 1000", "MC Break Particles: OFF", "RESET", "Done"] {
+        assert!(texts.iter().any(|x| x == t), "{t} in {texts:?}");
+    }
+    assert!(ui_text_width("GENERAL") > 30.0);
+}
