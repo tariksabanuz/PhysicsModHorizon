@@ -1,5 +1,5 @@
 {
-  "horizon_revision": "9d979caa48a3bb58203319b9ea044db58c38e0d8",
+  "horizon_revision": "6475f62f3c834b7489e1816bf47f47ea5eb2b879",
   "source_sha256": {
     "crates/horizon-client/src/lib.rs": "2559e4a2dae4133a5415038d423a71caf14b5dbcd2fd9215146e1be0c0bdeeba",
     "crates/horizon-client/src/mobs/render.rs": "1dcca742ee6613a52b4556a2a44723511374390644dc6f940e17e4ce2e3b5d1b",

@@ -1,16 +1,16 @@
 [mod]
 id = "horizon_physics"
-version = "0.15.2"
+version = "0.15.3"
 priority = 100
 
 [compatibility]
-horizon_revision = "9d979caa48a3bb58203319b9ea044db58c38e0d8"
+horizon_revision = "6475f62f3c834b7489e1816bf47f47ea5eb2b879"
 
 # The solver, the pieces and the settings. In the client library, so the mob hooks there and the
 # game's hooks can both reach it.
 [[module]]
 id = "runtime"
-file = "crates/horizon-client/src/lib.rs"
+file = "crates/horizon-client/src/client_lib.rs"
 name = "native_horizon_physics"
 source = "runtime.rs"
 visibility = "pub"
@@ -18,7 +18,7 @@ visibility = "pub"
 # The quick setup on the title screen: drawing it (the previews and the HUD).
 [[module]]
 id = "setup"
-file = "crates/horizon-client/src/lib.rs"
+file = "crates/horizon-client/src/client_lib.rs"
 name = "native_horizon_physics_setup"
 source = "setup.rs"
 visibility = "pub"
@@ -315,7 +315,13 @@ kind = "HEAD"
 cancellable = true
 target = "horizon_client_render::gfx::native_material::shader_source"
 helper = "shader.rs"
-bindings = [{ name = "source", ty = "&str", value = "source" }]
+bindings = [
+  { name = "source", ty = "&str", value = "source" },
+  { name = "tags", ty = "&[(u32, u32)]", value = "tags" },
+  { name = "materials", ty = "&[(u32, u32)]", value = "materials" },
+  { name = "vertex", ty = "bool", value = "vertex" },
+  { name = "displaced", ty = "bool", value = "displaced" },
+]
 
 # No shader pack picked: the mod's own vanilla-look pack runs, so the waves and sway can.
 [[injection]]

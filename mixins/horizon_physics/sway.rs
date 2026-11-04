@@ -692,16 +692,28 @@ fn horizon_physics_surface(layer: u32, pos: vec3<f32>, light: vec2<f32>, lightma
 }
 "#;
 
-/// The material stage's WGSL (`ENTRIES`) with the displacement and, for the built-in pack
-/// (`source` its stage), the water's look; None when nothing sways or the text is not the one
-/// this was written for.
+static SHADER_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// True when the shader hook was already asking the game for its own shader text (the hook's
+/// nested call, which the game answers itself).
+pub fn shader_enter() -> bool {
+    SHADER_BUSY.swap(true, std::sync::atomic::Ordering::SeqCst)
+}
+
+pub fn shader_leave() {
+    SHADER_BUSY.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// The material stage's WGSL (the game's `ENTRIES`, as it comes in the shader text after the pack's
+/// own source) with the displacement and, for the built-in pack (`source` its stage), the
+/// water's look; None when nothing sways or the text is not the one this was written for.
 pub fn patch(entries: &str, source: &str) -> Option<String> {
-    const AT: &str = "let pos = position + origin;";
-    const FIELD: &str = "    @location(7) cylindrical: f32,\n}";
-    const SET: &str = "    out.cylindrical = max(length(pos.xz), abs(pos.y));";
+    const AT: &str = "let pos = horizon_material_displace(position + origin, uv, layer, color, light);";
+    const FIELD: &str = "    @location(14) @interpolate(flat) normal: vec3<f32>,\n}";
+    const RET: &str = "    return horizon_material_out(pos, uv, layer, color, vec2<f32>(light));";
     const COLOR: &str = "return material(MaterialInput(";
     const COLOR_END: &str = ")).color;";
-    for anchor in [AT, FIELD, SET] {
+    for anchor in [AT, FIELD, RET] {
         if entries.matches(anchor).count() != 1 {
             return None;
         }
@@ -711,9 +723,9 @@ pub fn patch(entries: &str, source: &str) -> Option<String> {
     let shade = builtin && entries.matches(COLOR).count() == 1 && entries.matches(COLOR_END).count() == 1;
     let w = wgsl_with(&s, shade)?;
     let mut patched = entries
-        .replace(AT, "let pos = position + origin + horizon_physics_sway(position + origin, position, uv, layer);")
-        .replace(FIELD, "    @location(7) cylindrical: f32,\n    @location(8) hp_open: f32,\n}")
-        .replace(SET, &format!("{SET}\n    out.hp_open = horizon_physics_open(position, layer);"));
+        .replace(AT, "let pos = horizon_material_displace(position + origin, uv, layer, color, light)\n        + horizon_physics_sway(position + origin, position, uv, layer);")
+        .replace(FIELD, "    @location(14) @interpolate(flat) normal: vec3<f32>,\n    @location(15) hp_open: f32,\n}")
+        .replace(RET, "    var hp_out = horizon_material_out(pos, uv, layer, color, vec2<f32>(light));\n    hp_out.hp_open = horizon_physics_open(position, layer);\n    return hp_out;");
     if shade {
         patched = patched
             .replace(COLOR, "return horizon_physics_surface(in.layer, in.position, in.light, in.lightmap, in.hp_open, material(MaterialInput(")

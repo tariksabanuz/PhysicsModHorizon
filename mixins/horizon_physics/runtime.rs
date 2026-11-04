@@ -19,7 +19,7 @@ use crate::mesher::Vertex;
 
 pub const ID: &str = "horizon_physics";
 pub const NAME: &str = "Horizon Physics";
-pub const VERSION: &str = "0.15.2";
+pub const VERSION: &str = "0.15.3";
 pub const DESCRIPTION: &str =
     "By tariksabanuz. Blocks crumble and blow apart, ragdolls, items, smoke, ropes, capes, liquids, waves and swaying plants.";
 

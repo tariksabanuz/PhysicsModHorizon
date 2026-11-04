@@ -1,5 +1,5 @@
 // Type-checks the bundle's helpers against stubs that copy the real signatures they touch
-// (Horizon 9d979caa). Each helper sits in its target's module, as horizon-mixins puts it.
+// (Horizon 6475f62f). Each helper sits in its target's module, as horizon-mixins puts it.
 #![allow(dead_code, unused_variables, clippy::all)]
 extern crate self as horizon_client;
 extern crate self as horizon_client_render;
@@ -69,9 +69,9 @@ pub mod gfx {
     pub mod native_material {
         const ENTRIES: &str = "";
         fn vanilla_terrain() -> String { String::new() }
-        fn shader_source(source: &str) -> String {
+        fn shader_source(source: &str, tags: &[(u32, u32)], materials: &[(u32, u32)], vertex: bool, displaced: bool) -> String {
             //SHADER//
-            match __h_shader(source) {
+            match __h_shader(source, tags, materials, vertex, displaced) {
                 ::core::ops::ControlFlow::Break(v) => return v,
                 ::core::ops::ControlFlow::Continue(()) => {}
             }
