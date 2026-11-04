@@ -868,7 +868,7 @@ fn sway_table_and_shader() {
     sway::set_options(sway::SwayOptions::default());
     // For the WGSL check outside the tests.
     sway::set(1, || names.clone(), true, true, 2.4);
-    std::fs::write("/tmp/hp_sway.wgsl", sway::wgsl(&sway::current().unwrap()).unwrap()).unwrap();
+    std::fs::write("/tmp/hp_sway.wgsl", sway::wgsl_with(&sway::current().unwrap(), true).unwrap()).unwrap();
 }
 
 /// A floor at y = 64 with a roof (y = 68, x and z in -3..=3) on it: a shelter over fires.

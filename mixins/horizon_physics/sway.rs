@@ -263,7 +263,7 @@ pub const LAKE: [[f64; 6]; 4] = [
     [0.60, 0.80, 4.2, 0.03, 5.1, 0.6],
 ];
 /// How much of the swell moves the sea's surface sideways (Gerstner's steepness).
-pub const CHOP: f64 = 0.35;
+pub const CHOP: f64 = 0.28;
 
 fn swell_wgsl() -> String {
     let calls = |name: &str, table: &[[f64; 6]], what: &str| {
@@ -625,9 +625,67 @@ fn horizon_physics_sway(pos: vec3<f32>, raw: vec3<f32>, uv: vec2<f32>, layer: u3
 // The water's surface, lit as water: the swell and ripples bend the light, the sky is mirrored
 // more at a glancing angle (Fresnel), the sun glitters on it, light shines through the crests.
 // `color` is the material's; `lightmap` vanilla's light colour here.
+// Small noise for the water's foam and glints: a hash of the cell's corners, smoothly between them.
+fn horizon_physics_hash(p: vec2<f32>) -> f32 {
+    let q = p - floor(p / 4096.0) * 4096.0;
+    return fract(sin(dot(q, vec2(127.1, 311.7))) * 43758.5453);
+}
+fn horizon_physics_noise(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let a = horizon_physics_hash(i);
+    let b = horizon_physics_hash(i + vec2(1.0, 0.0));
+    let c = horizon_physics_hash(i + vec2(0.0, 1.0));
+    let d = horizon_physics_hash(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+fn horizon_physics_fbm(p: vec2<f32>) -> f32 {
+    return horizon_physics_noise(p) * 0.55 + horizon_physics_noise(p * 2.13 + vec2(5.2, 1.3)) * 0.3
+        + horizon_physics_noise(p * 4.41 + vec2(2.7, 8.1)) * 0.15;
+}
+// The fine waves on top of the swell, only in the light: fourteen small waves, each shorter than
+// the one before, spread around the wind's direction (most of them with it). `fw`: how much water
+// one pixel covers; a wave shorter than that would only flicker, so it fades out.
+fn horizon_physics_detail(p: vec2<f32>, t: f32, wind: vec2<f32>, fw: f32) -> vec2<f32> {
+    var g = vec2(0.0);
+    var len = 2.8;
+    var amp = 0.045;
+    let base = atan2(wind.y, wind.x);
+    for (var i = 0; i < 14; i++) {
+        let fi = f32(i);
+        let a = base + sin(fi * 2.39996) * 1.35;
+        let d = vec2(cos(a), sin(a));
+        let k = 6.2831853 / len;
+        let ph = k * dot(d, p) - sqrt(9.8 * k) * 0.55 * t + fi * 1.73;
+        let fade = clamp(1.0 - fw * k * 0.4, 0.0, 1.0);
+        g += d * (amp * k * cos(ph) * fade);
+        len *= 0.79;
+        amp *= 0.76;
+    }
+    return g;
+}
+// The sun on water: GGX, the microfacet highlight (a long, bright sun path on rough water, a
+// sharp disc on calm water).
+fn horizon_physics_ggx(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, rough: f32) -> f32 {
+    let h = normalize(v + l);
+    let nh = max(dot(n, h), 0.0);
+    let nl = max(dot(n, l), 0.0);
+    let nv = max(dot(n, v), 0.001);
+    let a = rough * rough;
+    let a2 = a * a;
+    let dd = nh * nh * (a2 - 1.0) + 1.0;
+    let d = a2 / (3.14159265 * dd * dd);
+    let k = a * 0.5;
+    let g = (nl / (nl * (1.0 - k) + k)) * (nv / (nv * (1.0 - k) + k));
+    let f = 0.02 + 0.98 * pow(1.0 - max(dot(h, v), 0.0), 5.0);
+    return d * g * f / (4.0 * nv + 0.001);
+}
 fn horizon_physics_surface(layer: u32, pos: vec3<f32>, light: vec2<f32>, lightmap: vec3<f32>, open: f32, color: vec4<f32>) -> vec4<f32> {
-    // The face's own normal, before any branch (derivatives need the whole quad).
+    // Before any branch (derivatives need the whole quad): the face's own normal, and how much
+    // water one pixel covers.
     let geo = cross(dpdx(pos), dpdy(pos));
+    let fw = length(fwidth(pos.xz));
     if (!HORIZON_PHYSICS_SHADE || horizon_physics_kind(layer) != 5u) { return color; }
     let up = abs(geo.y) > 0.6 * length(geo);
     if (!up) { return color; }
@@ -645,49 +703,99 @@ fn horizon_physics_surface(layer: u32, pos: vec3<f32>, light: vec2<f32>, lightma
     let cam = frame.camera_position;
     let at_cam = level + max(horizon_physics_swell(cam.xz, tw, open).x - 0.04, -floor_here);
     if (cam.y < at_cam) { return color; }
-    let r = horizon_physics_ripples(world.xz, tw);
-    // Far away the small waves blur into one.
-    let detail = 1.0 - smoothstep(24.0, 110.0, dist);
-    let slope = s.yz * max(reach, 0.25) + r * detail * (0.35 + 0.65 * clamp(open * 3.0, 0.0, 1.0));
+    let storm = horizon_physics_storm();
+    let wind = horizon_physics_wind_dir(tw * 0.02);
+    // The surface's normal at this pixel: the swell's slope and the fine waves over it (fewer
+    // on a sheltered shore, calmer in calm weather).
+    let rough_water = (0.45 + 0.55 * clamp(open * 3.0, 0.0, 1.0)) * (0.55 + 0.45 * storm);
+    let fine = horizon_physics_detail(world.xz, tw, wind, fw) * rough_water;
+    // The smallest chop, from noise: no wave's lines, just a restless surface close by.
+    let micro_fade = clamp(1.0 - fw * 3.0, 0.0, 1.0) * (1.0 - smoothstep(10.0, 40.0, dist));
+    let mp = world.xz * 2.3 + wind * tw * 0.06;
+    let e = 0.15;
+    let m0 = horizon_physics_fbm(mp);
+    let micro = vec2(horizon_physics_fbm(mp + vec2(e, 0.0)) - m0, horizon_physics_fbm(mp + vec2(0.0, e)) - m0) / e;
+    let slope = s.yz * max(reach, 0.25) + fine + micro * 0.07 * micro_fade * rough_water;
     let n = normalize(vec3(-slope.x, 1.0, -slope.y));
     let v = normalize(-pos);
     let cosv = clamp(dot(n, v), 0.0, 1.0);
-    let fresnel = 0.02 + 0.98 * pow(1.0 - cosv, 5.0);
-    let refl = reflect(-v, n);
-    // How bright it is here: the light colour of the sky light (dark at night, under trees).
+    let fresnel = clamp(0.035 + 0.965 * pow(1.0 - cosv, 5.0) + 0.05, 0.0, 1.0);
+    var refl = reflect(-v, n);
+    refl.y = abs(refl.y);
+    // Light: the sky light (dark at night, under trees and in caves).
     let bright = max(max(lightmap.r, lightmap.g), lightmap.b);
     let skylight = smoothstep(0.0, 1.0, light.y);
-    // The sky it mirrors: the horizon's haze below, the sky's colour above.
-    let sky = mix(frame.fog_color, frame.sky_color, clamp(refl.y * 2.5, 0.0, 1.0)) * (0.25 + 0.75 * skylight);
     let sun = normalize(frame.sun_direction);
     let day = smoothstep(-0.05, 0.2, sun.y);
-    let rs = max(dot(refl, sun), 0.0);
-    let glitter = (pow(rs, 900.0) * 9.0 + pow(rs, 120.0) * 0.9 + pow(rs, 18.0) * 0.08) * day * skylight;
-    let moon = pow(max(dot(refl, normalize(frame.moon_direction)), 0.0), 400.0) * 1.5 * (1.0 - day) * skylight;
-    let height = clamp(s.x / (0.75 * horizon_physics_storm() * max(HORIZON_PHYSICS_WAVE_HEIGHT, 0.05)), -1.0, 1.0);
-    var body = color.rgb * (0.9 + 0.12 * height);
-    if (sea > 0.0) {
-        // The open sea's own colour: deep blue-green in the troughs, clear teal where the light
-        // comes through a crest from behind (towards the sun).
-        let deep = vec3(0.01, 0.055, 0.09);
-        let shallow = vec3(0.04, 0.27, 0.3);
-        let tint = color.rgb / max(max(color.r, max(color.g, color.b)), 0.001);
-        var sea_rgb = mix(deep, shallow, 0.45 + 0.45 * height);
-        let behind = pow(clamp(dot(-v, vec3(sun.x, 0.0, sun.z)) * 0.5 + 0.5, 0.0, 1.0), 2.0);
-        let through = smoothstep(0.1, 0.9, height) * behind * day * 0.35;
-        sea_rgb += vec3(0.08, 0.42, 0.4) * through;
-        sea_rgb *= mix(vec3(1.0), tint, 0.25);
-        // The sun lights the slopes that face it: the waves' shapes show.
-        let lit = 0.6 + 0.6 * max(dot(n, sun), 0.0) * day + 0.15 * (1.0 - day);
-        body = mix(body, sea_rgb * (0.35 + 0.65 * bright) * 1.35 * lit, 0.9 * sea);
-    }
-    var rgb = mix(body, sky, clamp(fresnel * mix(0.9, 0.75, sea), 0.0, 1.0));
-    rgb += vec3(1.0, 0.93, 0.78) * glitter + vec3(0.75, 0.82, 1.0) * moon;
-    // Froth on the highest crests of open water, more in strong wind.
-    let foam = smoothstep(0.82, 1.0, height) * smoothstep(0.5, 1.2, horizon_physics_storm()) * 0.45 * sea * HORIZON_PHYSICS_FOAM;
-    rgb = mix(rgb, vec3(0.92, 0.95, 0.97) * (0.3 + 0.7 * skylight), foam);
-    let opaque = mix(color.a, 0.92, sea);
-    let a = clamp(mix(opaque, 1.0, fresnel) + glitter + foam, 0.0, 1.0);
+    let sun_rgb = mix(vec3(1.0, 0.55, 0.3), vec3(1.0, 0.95, 0.85), smoothstep(0.0, 0.35, sun.y));
+    // The sky it mirrors: haze at the horizon, the sky's own colour higher up, a glow round the
+    // sun, and clouds drifting over (soft streaks, darker on their undersides).
+    let zenith = frame.sky_color * 0.85;
+    var sky = mix(frame.fog_color * 1.05, zenith, pow(clamp(refl.y, 0.0, 1.0), 0.45));
+    let around = max(dot(refl, sun), 0.0);
+    sky += sun_rgb * (pow(around, 12.0) * 0.35 + pow(around, 3.0) * 0.08) * day;
+    let cloud_uv = refl.xz / max(refl.y + 0.15, 0.05) * 1.6 + wind * tw * 0.004;
+    let cloud = smoothstep(0.5, 0.85, horizon_physics_fbm(cloud_uv)) * smoothstep(0.02, 0.25, refl.y);
+    sky = mix(sky, mix(frame.fog_color, vec3(1.0), 0.75) * (0.55 + 0.45 * day), cloud * 0.55);
+    sky *= 0.2 + 0.8 * skylight;
+    // The sun's path, sharp and bright, and the glints where a small wave catches it.
+    let l = sun;
+    // A sharp highlight, and the wide glittering path the sun lays across rough water.
+    let spec_sun = horizon_physics_ggx(n, v, l, mix(0.05, 0.16, rough_water)) * max(dot(n, l), 0.0)
+        + horizon_physics_ggx(n, v, l, mix(0.22, 0.38, rough_water)) * max(dot(n, l), 0.0) * 1.6;
+    let glints = pow(max(dot(refl, sun), 0.0), 1500.0) * 14.0;
+    let sparkle = (min(spec_sun, 40.0) * 0.55 + glints) * day * skylight;
+    let moon_dir = normalize(frame.moon_direction);
+    let moon = (pow(max(dot(refl, moon_dir), 0.0), 600.0) * 3.0 + pow(max(dot(refl, moon_dir), 0.0), 40.0) * 0.08) * (1.0 - day) * skylight;
+    // The water itself: clear and greenish where it is shallow (the shore, a pond), deep blue
+    // where it is deep and open, tinted by the biome's water colour.
+    let height = clamp(s.x / (0.75 * storm * max(HORIZON_PHYSICS_WAVE_HEIGHT, 0.05)), -1.0, 1.0);
+    let tint = color.rgb / max(max(color.r, max(color.g, color.b)), 0.001);
+    let deepness = smoothstep(0.0, 1.0, open);
+    let shallow_rgb = vec3(0.08, 0.4, 0.4);
+    let deep_rgb = mix(vec3(0.025, 0.12, 0.17), vec3(0.014, 0.075, 0.14), sea);
+    var water = mix(shallow_rgb, deep_rgb, deepness);
+    water *= mix(vec3(1.0), tint, 0.35);
+    // Lit from above by the sky, the slopes facing the sun a little more.
+    let ambient = (0.35 + 0.65 * bright) * (0.25 + 0.75 * mix(0.18, 1.0, day) * skylight);
+    water *= ambient * (0.8 + 0.45 * max(dot(n, sun), 0.0) * day);
+    // The daylight scattered inside the water: it glows a little from within.
+    water += vec3(0.0, 0.045, 0.06) * day * skylight * (1.0 - 0.5 * deepness);
+    // Crests lighter, troughs darker: the swell's shape shows even with the sun behind you.
+    water *= 0.7 + 0.6 * (height * 0.5 + 0.5);
+    // The sun shining through a crest from behind: the bright turquoise of a wave's thin top.
+    let toward = pow(clamp(dot(-v, normalize(vec3(sun.x, 0.0, sun.z) + vec3(0.0, 0.0001, 0.0))) * 0.5 + 0.5, 0.0, 1.0), 3.0);
+    let thin = smoothstep(0.15, 0.95, height) * (0.4 + 0.6 * clamp(dot(n, v) * -0.5 + 0.8, 0.0, 1.0));
+    water += vec3(0.05, 0.48, 0.42) * thin * toward * day * skylight * 0.55 * (0.3 + 0.7 * sea);
+    // A little of the game's own water texture, so it still feels like Minecraft up close.
+    let near = 1.0 - smoothstep(4.0, 20.0, dist);
+    water = mix(water, color.rgb * ambient * 0.9, 0.12 * near);
+    var rgb = mix(water, sky, clamp(fresnel, 0.0, 1.0));
+    rgb += sun_rgb * sparkle + vec3(0.75, 0.82, 1.0) * moon;
+    // Foam: white caps where the crests break (high and steep, more in a storm), broken up by
+    // noise into streaks along the wind; and a line of froth lapping at the shore.
+    let steep = length(s.yz);
+    let caps = smoothstep(0.55, 1.0, height) * smoothstep(0.08, 0.3, steep + 0.12 * storm) * smoothstep(0.5, 1.3, storm) * sea;
+    let along = vec2(dot(world.xz, wind), dot(world.xz, vec2(-wind.y, wind.x)));
+    // Lace: foam is a web of bubbles, so it shows as a pattern that fills in as it thickens.
+    let lace = horizon_physics_fbm(vec2(along.x * 1.1, along.y * 2.6) + vec2(-tw * 0.35, 0.0)) * 0.6
+        + horizon_physics_fbm(world.xz * 4.7 + vec2(tw * 0.08, 0.0)) * 0.4;
+    let cover = clamp(caps * 0.55, 0.0, 0.6);
+    let cap_foam = smoothstep(1.0 - cover, 1.0 - cover + 0.1, lace) * smoothstep(0.0, 0.2, cover) * 0.85;
+    // The shore's water (the mesher marks it barely open), not the open water nor unmarked water.
+    let shore = smoothstep(0.0, 0.1, open) * (1.0 - smoothstep(0.15, 0.2, open));
+    let lap = 0.5 + 0.5 * sin(dot(world.xz, vec2(0.37, 0.29)) * 2.0 - tw * 1.3 + horizon_physics_noise(world.xz * 0.7) * 6.0);
+    let shore_cover = shore * (lap * 0.6 + 0.4);
+    let shore_lace = horizon_physics_fbm(world.xz * 3.7 + vec2(tw * 0.05, -tw * 0.03));
+    let shore_foam = smoothstep(1.0 - shore_cover, 1.0 - shore_cover + 0.15, shore_lace) * 0.9;
+    let foam = clamp(max(cap_foam, shore_foam) * HORIZON_PHYSICS_FOAM, 0.0, 0.9);
+    let foam_rgb = vec3(0.93, 0.96, 0.98) * (0.25 + 0.75 * ambient / max(0.35 + 0.65 * bright, 0.001));
+    rgb = mix(rgb, foam_rgb * (0.85 + 0.15 * max(dot(n, sun), 0.0)), foam);
+    // Far away the water melts into the haze like the land does.
+    rgb = mix(rgb, sky, smoothstep(90.0, 240.0, dist) * 0.25);
+    // See-through where shallow, nearly opaque where deep; the mirror is opaque.
+    let body_alpha = mix(0.5, 0.9, deepness);
+    let a = clamp(mix(body_alpha, 1.0, fresnel) + sparkle * 0.2 + foam, 0.0, 1.0);
     return vec4(rgb, a);
 }
 "#;
