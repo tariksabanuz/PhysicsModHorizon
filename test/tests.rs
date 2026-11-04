@@ -848,10 +848,11 @@ fn sway_table_and_shader() {
     assert!(w.contains("case 3u: { return 5u; }"));
     assert!(!w.contains("9u: { return 2u"), "plants are off");
     assert!(w.contains("7u: { return 1u"), "leaves have their own switch");
-    let entries = "struct HorizonMaterialOut {\n    @location(14) @interpolate(flat) normal: vec3<f32>,\n}\nfn horizon_material_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32) {\n    let pos = horizon_material_displace(position + origin, uv, layer, color, light);\n    return horizon_material_out(pos, uv, layer, color, vec2<f32>(light));\n}";
+    let entries = "struct HorizonMaterialOut {\n    @location(14) @interpolate(flat) normal: vec3<f32>,\n}\nfn horizon_material_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32) {\n    let pos = horizon_material_displace(position + origin, uv, layer, color, light);\n    return horizon_material_out(pos, uv, layer, color, vec2<f32>(light));\n}\nfn horizon_material_out(pos: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f32>,\n    light: vec2<f32>) -> HorizonMaterialOut {\n    out.base = pos;\n}";
     let p = sway::patch(entries, "").unwrap();
     assert!(p.contains("horizon_physics_sway(position + origin, position, uv, layer)"));
-    assert!(p.contains("hp_out.hp_open = horizon_physics_open(position, layer);"));
+    assert!(p.contains("horizon_physics_open(position, layer));"));
+    assert!(p.contains("out.hp_open = hp_open;"));
     assert!(p.contains("@location(15) hp_open: f32"));
     assert!(sway::patch("no anchor here", "").is_none());
     sway::set_options(sway::SwayOptions { leaves: false, vines: false, water_plants: false, ..Default::default() });

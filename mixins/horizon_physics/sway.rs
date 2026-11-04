@@ -711,9 +711,12 @@ pub fn patch(entries: &str, source: &str) -> Option<String> {
     const AT: &str = "let pos = horizon_material_displace(position + origin, uv, layer, color, light);";
     const FIELD: &str = "    @location(14) @interpolate(flat) normal: vec3<f32>,\n}";
     const RET: &str = "    return horizon_material_out(pos, uv, layer, color, vec2<f32>(light));";
+    const SIG: &str = "    light: vec2<f32>) -> HorizonMaterialOut {";
+    const BASE: &str = "    out.base = pos;";
+    const GRID_CALL: &str = "var out = horizon_material_out(p.position, p.uv, p.layer, p.color, p.light);";
     const COLOR: &str = "return material(MaterialInput(";
     const COLOR_END: &str = ")).color;";
-    for anchor in [AT, FIELD, RET] {
+    for anchor in [AT, FIELD, RET, SIG, BASE] {
         if entries.matches(anchor).count() != 1 {
             return None;
         }
@@ -725,7 +728,10 @@ pub fn patch(entries: &str, source: &str) -> Option<String> {
     let mut patched = entries
         .replace(AT, "let pos = horizon_material_displace(position + origin, uv, layer, color, light)\n        + horizon_physics_sway(position + origin, position, uv, layer);")
         .replace(FIELD, "    @location(14) @interpolate(flat) normal: vec3<f32>,\n    @location(15) hp_open: f32,\n}")
-        .replace(RET, "    var hp_out = horizon_material_out(pos, uv, layer, color, vec2<f32>(light));\n    hp_out.hp_open = horizon_physics_open(position, layer);\n    return hp_out;");
+        .replace(RET, "    return horizon_material_out(pos, uv, layer, color, vec2<f32>(light), horizon_physics_open(position, layer));")
+        .replace(SIG, "    light: vec2<f32>, hp_open: f32) -> HorizonMaterialOut {")
+        .replace(BASE, "    out.base = pos;\n    out.hp_open = hp_open;")
+        .replace(GRID_CALL, "var out = horizon_material_out(p.position, p.uv, p.layer, p.color, p.light, 0.0);");
     if shade {
         patched = patched
             .replace(COLOR, "return horizon_physics_surface(in.layer, in.position, in.light, in.lightmap, in.hp_open, material(MaterialInput(")
