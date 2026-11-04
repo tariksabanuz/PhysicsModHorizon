@@ -247,20 +247,27 @@ pub fn wgsl_with(s: &Sway, shade: bool) -> Option<String> {
     Some(w)
 }
 
-/// The open sea's swell: (direction x, direction z, wavelength, amplitude, phase, pace).
-pub const OCEAN: [[f64; 6]; 5] = [
-    [0.83, 0.56, 34.0, 0.5, 0.0, 0.42],
-    [0.45, 0.89, 21.0, 0.3, 1.7, 0.42],
-    [0.97, -0.24, 13.0, 0.17, 3.4, 0.45],
-    [0.62, 0.78, 8.5, 0.09, 5.1, 0.5],
-    [-0.2, 0.98, 5.5, 0.045, 6.8, 0.5],
+/// The open sea's swell: (direction x, direction z, wavelength, amplitude, phase, pace). Eight
+/// waves from around the wind's direction, none a whole multiple of another, each rising and
+/// falling along its crests (`wave_group`): a sea that never repeats. None shorter than 4 blocks,
+/// which the mesh (a corner a block) could not show; the shorter ones are in the light only.
+pub const OCEAN: [[f64; 6]; 8] = [
+    [0.8290, 0.5592, 34.0, 0.4370, 0.0, 0.42],
+    [0.4695, 0.8829, 23.7, 0.2875, 1.7, 0.43],
+    [0.9998, -0.0175, 17.3, 0.2070, 3.4, 0.45],
+    [-0.1045, 0.9945, 12.9, 0.1380, 5.1, 0.47],
+    [0.9397, 0.3420, 9.7, 0.0978, 6.8, 0.5],
+    [0.1564, 0.9877, 7.3, 0.0633, 8.3, 0.52],
+    [0.9135, -0.4067, 5.4, 0.0403, 9.9, 0.55],
+    [0.7314, 0.6820, 4.3, 0.0253, 11.2, 0.58],
 ];
 /// A lake's or river's lapping.
-pub const LAKE: [[f64; 6]; 4] = [
-    [0.83, 0.56, 14.0, 0.13, 0.0, 0.55],
-    [0.39, 0.92, 9.0, 0.09, 1.7, 0.55],
-    [0.97, -0.24, 6.4, 0.055, 3.4, 0.58],
-    [0.60, 0.80, 4.2, 0.03, 5.1, 0.6],
+pub const LAKE: [[f64; 6]; 5] = [
+    [0.8290, 0.5592, 14.0, 0.1265, 0.0, 0.55],
+    [0.2756, 0.9613, 9.6, 0.0920, 1.7, 0.55],
+    [0.9976, 0.0698, 6.9, 0.0633, 3.4, 0.58],
+    [-0.3256, 0.9455, 5.1, 0.0403, 5.1, 0.6],
+    [0.8988, -0.4384, 4.2, 0.0253, 6.6, 0.62],
 ];
 /// How much of the swell moves the sea's surface sideways (Gerstner's steepness).
 pub const CHOP: f64 = 0.28;
@@ -278,7 +285,7 @@ fn swell_wgsl() -> String {
     let mut out = String::new();
     out.push_str(&calls("horizon_physics_ocean", &OCEAN, "vec3<f32>"));
     out.push_str(&calls("horizon_physics_lake", &LAKE, "vec3<f32>"));
-    out.push_str("// Gerstner's sideways motion of the sea's surface: the water gathers under the crests, which\n// turn sharp, and spreads in the troughs.\nfn horizon_physics_chop_wave(w: vec4<f32>, p: vec2<f32>, t: f32, seed: f32, pace: f32) -> vec2<f32> {\n    let k = 6.2831853 / w.z;\n    let ph = k * dot(w.xy, p) - sqrt(9.8 * k) * pace * t + seed;\n    return -w.xy * (w.w * cos(ph));\n}\n");
+    out.push_str("// Gerstner's sideways motion of the sea's surface: the water gathers under the crests, which\n// turn sharp, and spreads in the troughs.\nfn horizon_physics_chop_wave(w: vec4<f32>, p: vec2<f32>, t: f32, seed: f32, pace: f32) -> vec2<f32> {\n    let k = 6.2831853 / w.z;\n    let ph = k * dot(w.xy, p) - sqrt(9.8 * k) * pace * t + seed;\n    return -w.xy * (w.w * cos(ph) * horizon_physics_group(w, p, t, seed, pace));\n}\n");
     out.push_str(&calls("horizon_physics_chop_sum", &OCEAN, "vec2<f32>"));
     let _ = writeln!(out, "fn horizon_physics_chop(p: vec2<f32>, t: f32, open: f32) -> vec2<f32> {{\n    return horizon_physics_chop_sum(p, t) * ({:?} * horizon_physics_storm() * HORIZON_PHYSICS_WAVE_HEIGHT * horizon_physics_sea(open));\n}}", CHOP as f32);
     out
@@ -316,8 +323,9 @@ pub fn water_motion_with(x: f64, z: f64, t: f64, open: f64, wind: f64, height: f
         for w in table {
             let kk = std::f64::consts::TAU / w[2];
             let ph = kk * (w[0] * x + w[1] * z) - (9.8 * kk).sqrt() * w[5] * t + w[4];
-            let c = w[3] * kk * ph.cos();
-            r[0] += w[3] * ph.sin() * k * storm;
+            let g = wave_group(w, x, z, t);
+            let c = w[3] * kk * ph.cos() * g;
+            r[0] += w[3] * ph.sin() * g * k * storm;
             r[3] += c * w[0] * k * storm;
             r[4] += c * w[1] * k * storm;
         }
@@ -325,13 +333,20 @@ pub fn water_motion_with(x: f64, z: f64, t: f64, open: f64, wind: f64, height: f
     for w in &OCEAN {
         let kk = std::f64::consts::TAU / w[2];
         let ph = kk * (w[0] * x + w[1] * z) - (9.8 * kk).sqrt() * w[5] * t + w[4];
-        let s = -w[3] * ph.cos() * CHOP * storm * sea;
+        let s = -w[3] * ph.cos() * wave_group(w, x, z, t) * CHOP * storm * sea;
         r[1] += w[0] * s;
         r[2] += w[1] * s;
     }
     r[0] -= 0.04;
     r[0] = r[0].max(-water_floor(open));
     r
+}
+
+/// How much of wave `w` there is at (x, z), time `t`: waves come in groups, so each rises and
+/// falls along its crests and slowly moves on (`horizon_physics_group`).
+pub fn wave_group(w: &[f64; 6], x: f64, z: f64, t: f64) -> f64 {
+    let kk = std::f64::consts::TAU / w[2];
+    0.8 + 0.45 * (0.13 * kk * (-w[1] * x + w[0] * z) + w[4] * 2.7 + 0.07 * t * w[5]).sin()
 }
 
 /// How far a trough may go down where the water is `open` (`horizon_physics_floor`).
@@ -437,8 +452,15 @@ fn horizon_physics_wave(w: vec4<f32>, p: vec2<f32>, t: f32, seed: f32, pace: f32
     let k = 6.2831853 / w.z;
     let omega = sqrt(9.8 * k) * pace;
     let ph = k * dot(w.xy, p) - omega * t + seed;
-    let c = w.w * k * cos(ph);
-    return vec3(w.w * sin(ph), c * w.x, c * w.y);
+    let g = horizon_physics_group(w, p, t, seed, pace);
+    let c = w.w * k * cos(ph) * g;
+    return vec3(w.w * sin(ph) * g, c * w.x, c * w.y);
+}
+// Waves come in groups: each rises and falls along its crests and slowly moves on (the game's
+// `wave_group`, for the boats and the camera).
+fn horizon_physics_group(w: vec4<f32>, p: vec2<f32>, t: f32, seed: f32, pace: f32) -> f32 {
+    let k = 6.2831853 / w.z;
+    return 0.8 + 0.45 * sin(0.13 * k * dot(vec2(-w.y, w.x), p) + seed * 2.7 + 0.07 * t * pace);
 }
 // The water's clock: the world's time, so the game can follow the same waves (a boat on them).
 fn horizon_physics_water_time() -> f32 {
@@ -626,9 +648,17 @@ fn horizon_physics_sway(pos: vec3<f32>, raw: vec3<f32>, uv: vec2<f32>, layer: u3
 // more at a glancing angle (Fresnel), the sun glitters on it, light shines through the crests.
 // `color` is the material's; `lightmap` vanilla's light colour here.
 // Small noise for the water's foam and glints: a hash of the cell's corners, smoothly between them.
+// An integer hash of the lattice point (no `sin`: far from the world's origin that turns into
+// stripes).
 fn horizon_physics_hash(p: vec2<f32>) -> f32 {
-    let q = p - floor(p / 4096.0) * 4096.0;
-    return fract(sin(dot(q, vec2(127.1, 311.7))) * 43758.5453);
+    let c = bitcast<vec2<u32>>(vec2<i32>(floor(p)));
+    var h = (c.x * 73856093u) ^ (c.y * 19349663u) ^ 0x9e3779b9u;
+    h = h ^ (h >> 16u);
+    h = h * 0x7feb352du;
+    h = h ^ (h >> 15u);
+    h = h * 0x846ca68bu;
+    h = h ^ (h >> 16u);
+    return f32(h & 0xffffffu) / 16777216.0;
 }
 fn horizon_physics_noise(p: vec2<f32>) -> f32 {
     let i = floor(p);
@@ -662,6 +692,25 @@ fn horizon_physics_detail(p: vec2<f32>, t: f32, wind: vec2<f32>, fw: f32) -> vec
         g += d * (amp * k * cos(ph) * fade);
         len *= 0.79;
         amp *= 0.76;
+    }
+    return g;
+}
+// Rain on the water: rings spreading from where each drop hit, two layers of drops so they
+// never line up. Returns the slope they add.
+fn horizon_physics_rain(p: vec2<f32>, t: f32) -> vec2<f32> {
+    var g = vec2(0.0);
+    for (var layer = 0; layer < 3; layer++) {
+        let fl = f32(layer);
+        let q = p * 1.7 + vec2(fl * 0.37, fl * 0.71);
+        let cell = floor(q);
+        let h = horizon_physics_hash(cell + vec2(fl * 17.0, fl * 5.0));
+        let center = cell + 0.3 + 0.4 * vec2(h, fract(h * 7.13));
+        let life = fract(t * 0.85 + h * 5.0 + fl * 0.33);
+        let d = q - center;
+        let r = length(d);
+        let x = (r - life * 0.55) * 22.0;
+        let ring = sin(x * 1.6) * exp(-x * x * 0.08) * (1.0 - life) * (1.0 - life);
+        g += d / max(r, 0.001) * ring * 0.45;
     }
     return g;
 }
@@ -708,14 +757,21 @@ fn horizon_physics_surface(layer: u32, pos: vec3<f32>, light: vec2<f32>, lightma
     // The surface's normal at this pixel: the swell's slope and the fine waves over it (fewer
     // on a sheltered shore, calmer in calm weather).
     let rough_water = (0.45 + 0.55 * clamp(open * 3.0, 0.0, 1.0)) * (0.55 + 0.45 * storm);
-    let fine = horizon_physics_detail(world.xz, tw, wind, fw) * rough_water;
+    // Gusts roughen the water in drifting patches (cat's paws): darker, rougher water beside calm,
+    // glassy streaks.
+    let gust = horizon_physics_fbm(world.xz * 0.035 + wind * tw * 0.015);
+    let paws = 0.45 + 1.1 * smoothstep(0.25, 0.75, gust);
+    let fine = horizon_physics_detail(world.xz, tw, wind, fw) * rough_water * paws;
     // The smallest chop, from noise: no wave's lines, just a restless surface close by.
     let micro_fade = clamp(1.0 - fw * 3.0, 0.0, 1.0) * (1.0 - smoothstep(10.0, 40.0, dist));
     let mp = world.xz * 2.3 + wind * tw * 0.06;
     let e = 0.15;
     let m0 = horizon_physics_fbm(mp);
     let micro = vec2(horizon_physics_fbm(mp + vec2(e, 0.0)) - m0, horizon_physics_fbm(mp + vec2(0.0, e)) - m0) / e;
-    let slope = s.yz * max(reach, 0.25) + fine + micro * 0.07 * micro_fade * rough_water;
+    let rain_fade = frame.rain * smoothstep(0.3, 0.9, light.y) * (1.0 - smoothstep(12.0, 32.0, dist)) * clamp(1.0 - fw * 4.0, 0.0, 1.0);
+    var drops = vec2(0.0);
+    if (rain_fade > 0.01) { drops = horizon_physics_rain(world.xz, frame.time) * rain_fade; }
+    let slope = s.yz * max(reach, 0.25) + fine + micro * 0.07 * micro_fade * rough_water + drops;
     let n = normalize(vec3(-slope.x, 1.0, -slope.y));
     let v = normalize(-pos);
     let cosv = clamp(dot(n, v), 0.0, 1.0);
@@ -782,13 +838,14 @@ fn horizon_physics_surface(layer: u32, pos: vec3<f32>, light: vec2<f32>, lightma
         + horizon_physics_fbm(world.xz * 4.7 + vec2(tw * 0.08, 0.0)) * 0.4;
     let cover = clamp(caps * 0.55, 0.0, 0.6);
     let cap_foam = smoothstep(1.0 - cover, 1.0 - cover + 0.1, lace) * smoothstep(0.0, 0.2, cover) * 0.85;
+    let streak = 0.0;
     // The shore's water (the mesher marks it barely open), not the open water nor unmarked water.
     let shore = smoothstep(0.0, 0.1, open) * (1.0 - smoothstep(0.15, 0.2, open));
     let lap = 0.5 + 0.5 * sin(dot(world.xz, vec2(0.37, 0.29)) * 2.0 - tw * 1.3 + horizon_physics_noise(world.xz * 0.7) * 6.0);
     let shore_cover = shore * (lap * 0.6 + 0.4);
     let shore_lace = horizon_physics_fbm(world.xz * 3.7 + vec2(tw * 0.05, -tw * 0.03));
     let shore_foam = smoothstep(1.0 - shore_cover, 1.0 - shore_cover + 0.15, shore_lace) * 0.9;
-    let foam = clamp(max(cap_foam, shore_foam) * HORIZON_PHYSICS_FOAM, 0.0, 0.9);
+    let foam = clamp(max(max(cap_foam, shore_foam), streak) * HORIZON_PHYSICS_FOAM, 0.0, 0.9);
     let foam_rgb = vec3(0.93, 0.96, 0.98) * (0.25 + 0.75 * ambient / max(0.35 + 0.65 * bright, 0.001));
     rgb = mix(rgb, foam_rgb * (0.85 + 0.15 * max(dot(n, sun), 0.0)), foam);
     // Far away the water melts into the haze like the land does.
