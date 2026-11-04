@@ -1762,3 +1762,25 @@ fn a_piece_does_not_balance_on_a_block_edge() {
     let b = &p.bodies[0];
     assert!(b.x.y < 64.6, "rests on the pillar's edge: {:?}", b.x);
 }
+
+#[test]
+fn the_terrain_shader_is_made_ready_for_fxc() {
+    use crate::native_horizon_physics_sway as sway;
+    let old = "fn packed_corner() {\n    var pos = block;\n    pos[axis] = block[axis] + side;\n    pos[(axis + 1u) % 3u] = block[(axis + 1u) % 3u] + du;\n    pos[(axis + 2u) % 3u] = block[(axis + 2u) % 3u] + dw;\n    let sel = 0u;\n}";
+    let new = sway::fxc_terrain(old).unwrap();
+    assert!(!new.contains("pos[axis]"), "no component written at a GPU-known index");
+    assert!(new.contains("let pos = block + select(select(vec3(side, du, dw), vec3(dw, side, du), axis == 1u),"));
+    assert!(sway::fxc_terrain(&new).is_none(), "once is enough");
+    assert!(sway::fxc_terrain("fn f() {}").is_none(), "other shaders untouched");
+    // The same corner as the game's, for each axis.
+    for axis in 0..3usize {
+        let (block, side, du, dw) = ([3u32, 5, 7], 1u32, 1u32, 0u32);
+        let mut want = block;
+        want[axis] = block[axis] + side;
+        want[(axis + 1) % 3] = block[(axis + 1) % 3] + du;
+        want[(axis + 2) % 3] = block[(axis + 2) % 3] + dw;
+        let off = match axis { 1 => [dw, side, du], 2 => [du, dw, side], _ => [side, du, dw] };
+        let got = [block[0] + off[0], block[1] + off[1], block[2] + off[2]];
+        assert_eq!(got, want, "axis {axis}");
+    }
+}

@@ -1,6 +1,6 @@
 [mod]
 id = "horizon_physics"
-version = "0.16.0"
+version = "0.16.1"
 priority = 100
 
 [compatibility]
@@ -321,6 +321,19 @@ bindings = [
   { name = "materials", ty = "&[(u32, u32)]", value = "materials" },
   { name = "vertex", ty = "bool", value = "vertex" },
   { name = "displaced", ty = "bool", value = "displaced" },
+]
+
+# DirectX 12 (FXC): Horizon's own terrain shader made ready for FXC before the renderer builds
+# it; the game crashed at its start there.
+[[injection]]
+id = "fxc"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client_render::gfx::reuse::On<'_>::create_shader_module"
+helper = "fxc.rs"
+bindings = [
+  { name = "this", ty = "&On<'_>", value = "self" },
+  { name = "descriptor", ty = "&wgpu::ShaderModuleDescriptor<'_>", value = "&descriptor" },
 ]
 
 # No shader pack picked: the mod's own vanilla-look pack runs, so the waves and sway can.

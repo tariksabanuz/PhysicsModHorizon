@@ -64,7 +64,27 @@ pub mod native_horizon_physics_sway {
     //SWAY_MODULE//
 }
 
+pub mod wgpu {
+    pub struct ShaderModuleDescriptor<'a> { pub label: Option<&'a str>, pub source: ShaderSource<'a> }
+    pub enum ShaderSource<'a> { Wgsl(std::borrow::Cow<'a, str>), Other }
+    pub struct ShaderModule(pub String);
+}
+
 pub mod gfx {
+    pub mod reuse {
+        pub struct On<'a>(pub &'a ());
+        impl On<'_> {
+            pub fn create_shader_module(&self, descriptor: crate::wgpu::ShaderModuleDescriptor<'_>) -> crate::wgpu::ShaderModule {
+                use crate::wgpu;
+                //FXC//
+                match __h_fxc(self, &descriptor) {
+                    ::core::ops::ControlFlow::Break(v) => return v,
+                    ::core::ops::ControlFlow::Continue(()) => {}
+                }
+                match descriptor.source { wgpu::ShaderSource::Wgsl(t) => wgpu::ShaderModule(t.into_owned()), _ => wgpu::ShaderModule(String::new()) }
+            }
+        }
+    }
     pub fn outline_width(width: u32) -> f32 { 2.5 }
     pub mod native_material {
         const ENTRIES: &str = "";

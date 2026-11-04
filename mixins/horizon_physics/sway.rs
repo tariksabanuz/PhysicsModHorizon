@@ -692,6 +692,27 @@ fn horizon_physics_surface(layer: u32, pos: vec3<f32>, light: vec2<f32>, lightma
 }
 "#;
 
+/// Horizon's terrain shader for DirectX 12's FXC compiler: `packed_corner` writes the corner's
+/// position one component at a time at an index known only on the GPU (`pos[axis] = ...`), and
+/// FXC refuses that ("array reference cannot be used as an l-value"): the game crashed at its
+/// start on DirectX 12. The same position, put together whole. None when `text` has no such
+/// lines (another shader, or a Horizon that changed them).
+pub fn fxc_terrain(text: &str) -> Option<String> {
+    const OLD: &str = "    var pos = block;
+    pos[axis] = block[axis] + side;
+    pos[(axis + 1u) % 3u] = block[(axis + 1u) % 3u] + du;
+    pos[(axis + 2u) % 3u] = block[(axis + 2u) % 3u] + dw;
+";
+    const NEW: &str = "    // Horizon Physics: the corner whole, not one component at a time (FXC).
+    let pos = block + select(select(vec3(side, du, dw), vec3(dw, side, du), axis == 1u),
+        vec3(du, dw, side), axis == 2u);
+";
+    if !text.contains(OLD) {
+        return None;
+    }
+    Some(text.replace(OLD, NEW))
+}
+
 static SHADER_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// True when the shader hook was already asking the game for its own shader text (the hook's

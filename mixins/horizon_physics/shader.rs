@@ -16,6 +16,8 @@ fn horizon_physics_shader(
     let text = shader_source(source, tags, materials, vertex, displaced);
     sway::shader_leave();
     // The text is the pack's source, then the game's terrain: only the game's part is patched.
+    // The game's terrain in it, ready for DirectX 12's FXC.
+    let text = sway::fxc_terrain(&text).unwrap_or(text);
     let Some(rest) = text.strip_prefix(source) else {
         return ::core::ops::ControlFlow::Break(text);
     };
