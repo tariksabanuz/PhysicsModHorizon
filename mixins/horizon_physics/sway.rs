@@ -330,7 +330,18 @@ pub fn water_motion_with(x: f64, z: f64, t: f64, open: f64, wind: f64, height: f
         r[2] += w[1] * s;
     }
     r[0] -= 0.04;
+    r[0] = r[0].max(-water_floor(open));
     r
+}
+
+/// How far a trough may go down where the water is `open` (`horizon_physics_floor`).
+pub fn water_floor(open: f64) -> f64 {
+    match (open * 7.0).round() as i32 {
+        ..=1 => 0.35,
+        2 => 1.1,
+        3 => 1.9,
+        c => 2.8 + f64::from(c - 4),
+    }
 }
 
 /// The step of the mesher's mark, and the height vanilla gives a still surface's corners.
@@ -460,6 +471,16 @@ fn horizon_physics_open(position: vec3<f32>, layer: u32) -> f32 {
     if (d < -0.45 || d > 7.45) { return 0.0; }
     return round(d) / 7.0;
 }
+// How far a trough may go down where the water is `open`: never below the bottom (the marks'
+// depth: a puddle or a shallow shore a little, the open sea all the way), so the seabed's
+// blocks never poke up through the water.
+fn horizon_physics_floor(open: f32) -> f32 {
+    let code = round(open * 7.0);
+    if (code <= 1.0) { return 0.35; }
+    if (code <= 2.0) { return 1.1; }
+    if (code <= 3.0) { return 1.9; }
+    return 2.8 + (code - 4.0);
+}
 // How far out the water moves: all of it close by, none past the shape's reach.
 fn horizon_physics_reach(dist: f32) -> f32 {
     return 1.0 - smoothstep(72.0, 104.0, dist);
@@ -550,7 +571,7 @@ fn horizon_physics_sway(pos: vec3<f32>, raw: vec3<f32>, uv: vec2<f32>, layer: u3
                         let tw = horizon_physics_water_time();
                         let s = horizon_physics_swell(world.xz, tw, open);
                         let side = horizon_physics_chop(world.xz, tw, open);
-                        off = vec3(side.x, s.x - 0.04, side.y);
+                        off = vec3(side.x, max(s.x - 0.04, -horizon_physics_floor(open)), side.y);
                     }
                 } else {
                     // Lava: a slow, heavy heave.
@@ -609,14 +630,21 @@ fn horizon_physics_surface(layer: u32, pos: vec3<f32>, light: vec2<f32>, lightma
     let geo = cross(dpdx(pos), dpdy(pos));
     if (!HORIZON_PHYSICS_SHADE || horizon_physics_kind(layer) != 5u) { return color; }
     let up = abs(geo.y) > 0.6 * length(geo);
-    // Seen from under the water: vanilla's look.
-    if (!up || pos.y > 0.0) { return color; }
+    if (!up) { return color; }
     let world = pos + frame.camera_position;
     let tw = horizon_physics_water_time();
     let dist = length(pos);
     let reach = horizon_physics_reach(dist);
     let sea = horizon_physics_sea(open);
     let s = horizon_physics_swell(world.xz, tw, open);
+    // Seen from under the water: vanilla's look. Under it is where the camera is below this
+    // water's surface at the camera's own place, not below this point of it: a crest higher
+    // than the eye, seen from above the water, is still seen from above.
+    let floor_here = horizon_physics_floor(open);
+    let level = world.y - max(s.x - 0.04, -floor_here) * reach;
+    let cam = frame.camera_position;
+    let at_cam = level + max(horizon_physics_swell(cam.xz, tw, open).x - 0.04, -floor_here);
+    if (cam.y < at_cam) { return color; }
     let r = horizon_physics_ripples(world.xz, tw);
     // Far away the small waves blur into one.
     let detail = 1.0 - smoothstep(24.0, 110.0, dist);

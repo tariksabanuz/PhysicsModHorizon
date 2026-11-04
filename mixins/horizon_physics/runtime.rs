@@ -19,7 +19,7 @@ use crate::mesher::Vertex;
 
 pub const ID: &str = "horizon_physics";
 pub const NAME: &str = "Horizon Physics";
-pub const VERSION: &str = "0.15.1";
+pub const VERSION: &str = "0.15.2";
 pub const DESCRIPTION: &str =
     "By tariksabanuz. Blocks crumble and blow apart, ragdolls, items, smoke, ropes, capes, liquids, waves and swaying plants.";
 
@@ -1174,6 +1174,28 @@ impl Body {
     fn radius(&self) -> f64 {
         self.half.len()
     }
+
+    /// Where a piece touches the blocks: its corners and, for a piece bigger than a crumb, also
+    /// the middles of its edges and faces, so it cannot balance on a block's edge between two
+    /// corners (a ragdoll propped up on it).
+    fn samples(&self) -> Vec<V3> {
+        let h = self.half * 0.999;
+        if h.x.max(h.y).max(h.z) < 0.12 {
+            return self.corners().to_vec();
+        }
+        let mut out = Vec::with_capacity(26);
+        for ix in [-1.0, 0.0, 1.0] {
+            for iy in [-1.0, 0.0, 1.0] {
+                for iz in [-1.0, 0.0, 1.0] {
+                    if ix == 0.0 && iy == 0.0 && iz == 0.0 {
+                        continue;
+                    }
+                    out.push(v3(h.x * ix, h.y * iy, h.z * iz));
+                }
+            }
+        }
+        out
+    }
 }
 
 /// Moves `a`'s point at `ra` by `corr` (and `b`'s at `rb` the other way), split by how easily
@@ -1229,6 +1251,9 @@ const STATIC_FRICTION: f64 = 0.6;
 const DYNAMIC_FRICTION: f64 = 0.45;
 const RESTITUTION: f64 = 0.25;
 const MAX_BODIES: usize = 1000;
+/// Blocks a second and radians a second a piece may move at most.
+const MAX_SPEED: f64 = 30.0;
+const MAX_SPIN: f64 = 40.0;
 
 pub struct Physics {
     pub bodies: Vec<Body>,
@@ -1443,7 +1468,7 @@ impl Physics {
             }
             for b in &mut self.bodies[o.first..o.first + o.count] {
                 b.contacts.clear();
-                for c in b.corners() {
+                for c in b.samples() {
                     let p = b.x + b.q.rotate(c);
                     let prev = b.px + b.pq.rotate(c);
                     let Some((n, depth)) = penetration(world, p, prev, o.ignore) else {
@@ -1479,6 +1504,16 @@ impl Physics {
                     dq = Quat { w: -dq.w, x: -dq.x, y: -dq.y, z: -dq.z };
                 }
                 b.w = v3(dq.x, dq.y, dq.z) * (2.0 / h);
+                // A piece pushed out of a block (or another piece) deep inside it is moved out,
+                // not fired out: the move must not turn into a speed no fall or blast gives.
+                let speed = b.v.len();
+                if speed > MAX_SPEED {
+                    b.v = b.v * (MAX_SPEED / speed);
+                }
+                let spin = b.w.len();
+                if spin > MAX_SPIN {
+                    b.w = b.w * (MAX_SPIN / spin);
+                }
                 // Bounce and sliding friction at the corners that touched.
                 let contacts = std::mem::take(&mut b.contacts);
                 for c in &contacts {
@@ -3943,6 +3978,12 @@ impl Physics {
                 if l >= reach {
                     continue;
                 }
+                // Standing (or landing) on it: it is pressed down a little, never shot away.
+                if feet.y > b.x.y + b.half.y * 0.5 {
+                    b.v.y = b.v.y.min(0.0) + vel.y.min(0.0) * 0.3;
+                    b.v = b.v + hv * 0.15;
+                    continue;
+                }
                 let n = if l > 1e-6 {
                     d * (1.0 / l)
                 } else if hv.len() > 1e-6 {
@@ -3950,17 +3991,21 @@ impl Physics {
                 } else {
                     v3(1.0, 0.0, 0.0)
                 };
-                b.x = b.x + n * (reach - l);
+                // Out of the way, a little each frame (a big jump would push it into a block).
+                b.x = b.x + n * (reach - l).min(0.06);
                 // Carried at least as fast as the player walks into it, and a little more.
-                let into = hv.dot(n).max(0.0);
+                let into = hv.dot(n).max(0.0).min(6.0);
                 let target = into * 1.15 + 0.5;
                 let vn = b.v.dot(n);
                 if vn < target {
                     b.v = b.v + n * (target - vn);
                 }
                 b.v.y = b.v.y.max(0.35 * into.min(4.0));
-                // Kicked over: it rolls away from the feet.
-                b.w = b.w + n.cross(v3(0.0, 1.0, 0.0)) * (-(into * 2.5 + 0.5));
+                // Kicked over: it rolls away from the feet, as fast as the kick, no faster.
+                let roll = n.cross(v3(0.0, 1.0, 0.0)) * (-(into * 2.5 + 0.5));
+                if b.w.dot(roll) < roll.dot(roll) {
+                    b.w = b.w + roll * 0.25;
+                }
                 hit = true;
             }
             if hit {

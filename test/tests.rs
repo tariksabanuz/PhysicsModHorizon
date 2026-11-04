@@ -1711,3 +1711,45 @@ fn menu_buttons_light_up_smoothly() {
     let late = fills(&menu_ui(&mut m, w, h, tab));
     assert_eq!(green(&late), before + 1, "its bar green in the end, not at once");
 }
+
+#[test]
+fn standing_and_jumping_on_a_ragdoll_never_launches_it() {
+    let w = Flat { pillar: None, water_above: false };
+    let mut p = Physics::default();
+    let (verts, marks) = humanoid();
+    p.spawn_mob(&verts, &marks, v3(0.0, 65.6, -4.0), V3::default(), 1, 100.0);
+    run(&mut p, &w, 4.0);
+    let n = p.bodies.len() as f64;
+    let x = p.bodies.iter().map(|b| b.x.x).sum::<f64>() / n;
+    let z = p.bodies.iter().map(|b| b.x.z).sum::<f64>() / n;
+    let top = p.bodies.iter().map(|b| b.x.y).fold(f64::MIN, f64::max);
+    let mut fastest: f64 = 0.0;
+    for i in 0..240 {
+        // Jumping up and down on it, falling onto it at 8 blocks a second.
+        let k = f64::from(i % 30) / 30.0;
+        let feet = top + 0.1 + 1.2 * 4.0 * k * (1.0 - k);
+        let vy = if k < 0.5 { 6.0 } else { -8.0 };
+        p.shove(v3(x + 0.05, feet, z), v3(0.3, vy, 0.0));
+        p.step(1.0 / 60.0, 20.0, &w);
+        fastest = p.bodies.iter().map(|b| b.v.len()).fold(fastest, f64::max);
+    }
+    assert!(fastest < 8.0, "launched at {fastest} blocks a second");
+    for b in &p.bodies {
+        assert!((b.x.x - x).abs() < 3.0 && b.x.y < top + 2.0, "thrown away: {:?}", b.x);
+    }
+}
+
+#[test]
+fn a_piece_does_not_balance_on_a_block_edge() {
+    // A long plank dropped across the edge of a pillar topples off it instead of resting
+    // balanced on the edge between its corners.
+    let w = Flat { pillar: Some([0, 64, 0]), water_above: false };
+    let mut p = Physics::default();
+    let (c, h, verts) = box_mesh([-0.4, 0.0, -0.15, 0.4, 0.3, 0.15], [0.0, 0.0, 1.0, 1.0], u32::MAX);
+    let _ = c;
+    let body = Body::new(v3(1.05, 65.3, 0.5), Quat::IDENTITY, h, verts);
+    p.add(vec![body], Vec::new(), 100.0, None);
+    run(&mut p, &w, 4.0);
+    let b = &p.bodies[0];
+    assert!(b.x.y < 64.6, "rests on the pillar's edge: {:?}", b.x);
+}

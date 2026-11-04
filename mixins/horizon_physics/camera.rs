@@ -53,7 +53,14 @@ fn horizon_physics_camera(game: &mut crate::game::Game<'_>, partial: f32) -> ::c
         let t = sway::water_time(game.world.game_time, alpha);
         let m = sway::water_motion_with(pos.x, pos.z, t, open, sway::water_wind(), sway::water_height());
         let lift = [m[1], m[0] + 0.04, m[2]];
-        at += glam::DVec3::new(lift[0], lift[1], lift[2]);
+        // The eye stays on the side of the water the game thinks it is on (above it: no
+        // underwater fog; below it: the fog), and on the same side of the waved surface, so a
+        // trough never leaves the eye in the fog above the water, nor a crest the eye in the air
+        // under it.
+        let waved = surface + m[0];
+        let raised = at.y + lift[1];
+        let y = if at.y >= surface { raised.max(surface + 0.03).max(waved + 0.12) } else { raised.min(surface - 0.03).min(waved - 0.12) };
+        at += glam::DVec3::new(lift[0], y - at.y, lift[2]);
         if riding.is_some() {
             hp::set_rider_lift(Some(lift));
         }
