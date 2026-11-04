@@ -19,7 +19,7 @@ use crate::mesher::Vertex;
 
 pub const ID: &str = "horizon_physics";
 pub const NAME: &str = "Horizon Physics";
-pub const VERSION: &str = "0.15.5";
+pub const VERSION: &str = "0.16.0";
 pub const DESCRIPTION: &str =
     "By tariksabanuz. Blocks crumble and blow apart, ragdolls, items, smoke, ropes, capes, liquids, waves and swaying plants.";
 
@@ -496,7 +496,7 @@ impl Settings {
 
     fn base_text(&self) -> String {
         format!(
-            "blocks={}\ndeaths={}\nitems={}\nexplosions={}\nsmoke={}\nsnow={}\nropes={}\ncapes={}\nwaves={}\nplants={}\nliquids={}\nwind={}\ngravity={}\npieces={}\nlifetime={}\nblock_style={}\nweather={}\ncollapse={}\nsetup={}\n",
+            "blocks={}\ndeaths={}\nitems={}\nexplosions={}\nsmoke={}\nsnow={}\nropes={}\ncapes={}\nwaves={}\nplants={}\nliquids={}\nwind={}\ngravity={}\npieces={}\nlifetime={}\nblock_style={}\nweather={}\ncollapse={}\nsetup_done={}\n",
             self.blocks as u8,
             self.deaths,
             self.items as u8,
@@ -622,7 +622,7 @@ impl Settings {
                 "block_style" => s.block_style = n % 4,
                 "weather" => s.weather = n != 0,
                 "collapse" => s.collapse = n != 0,
-                "setup" => s.setup = n != 0,
+                "setup_done" => s.setup = n != 0,
                 _ => {}
             }
         }
@@ -695,8 +695,57 @@ pub fn loaded() -> bool {
     SETTINGS.lock().map(|g| g.is_some()).unwrap_or(true)
 }
 
+/// The settings the mod runs with. Until the quick setup is done (or skipped) everything is off:
+/// the game starts as it would without the mod (no physics, no waves, no shader pack of the
+/// mod's own), and finishing the quick setup turns on what it chose.
 pub fn settings() -> Settings {
-    SETTINGS.lock().ok().and_then(|g| g.as_ref().map(|s| s.0)).unwrap_or_default()
+    let s = SETTINGS.lock().ok().and_then(|g| g.as_ref().map(|s| s.0));
+    match s {
+        Some(s) if s.setup => s,
+        Some(s) => s.all_off(),
+        None => Settings::default().all_off(),
+    }
+}
+
+impl Settings {
+    /// These settings with every effect off (the numbers kept for when they come on).
+    pub fn all_off(mut self) -> Self {
+        self.blocks = false;
+        self.deaths = 0;
+        self.items = false;
+        self.explosions = false;
+        self.smoke = false;
+        self.snow = false;
+        self.ropes = false;
+        self.capes = false;
+        self.waves = false;
+        self.plants = false;
+        self.liquids = false;
+        self.weather = false;
+        self.collapse = false;
+        self.mc_break = false;
+        self.item_break = false;
+        self.crack = false;
+        self.sprint = false;
+        self.eat = false;
+        self.block_particles = false;
+        self.boats = false;
+        self.foam = false;
+        self.sway_leaves = false;
+        self.sway_vines = false;
+        self.sway_water = false;
+        self.plant_push = false;
+        self.punch = false;
+        self.banners = false;
+        self.doors = false;
+        self.projectiles = false;
+        self.splashes = false;
+        self.mob_trails = false;
+        self.snow_powder = false;
+        self.embers = false;
+        self.wind_forces = false;
+        self
+    }
 }
 
 pub fn setting_labels() -> Vec<String> {

@@ -478,7 +478,14 @@ fn cape_box(neck: V3) -> Vec<Vertex> {
 fn capes_hang_as_cloth_and_leads_become_ropes() {
     let w = Flat { pillar: None, water_above: false };
     clear();
-    update_settings(|s| s.cape_range = 128.0);
+    // Before the quick setup everything is off; done, the settings it chose run.
+    update_settings(|s| s.setup = false);
+    assert!(!settings().capes && !settings().waves && settings().deaths == 0, "off until the quick setup");
+    update_settings(|s| {
+        s.cape_range = 128.0;
+        s.setup = true;
+    });
+    assert!(settings().capes && settings().waves, "on after the quick setup");
     let neck = v3(0.0, 65.5, 0.0);
     let mut out = Vec::new();
     let mut frames = 0;
