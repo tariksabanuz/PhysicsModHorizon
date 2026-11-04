@@ -1,6 +1,6 @@
 [mod]
 id = "horizon_physics"
-version = "0.15.3"
+version = "0.15.4"
 priority = 100
 
 [compatibility]
@@ -139,7 +139,7 @@ bindings = [
 id = "mob"
 kind = "HEAD"
 cancellable = true
-target = "horizon_client::mobs::render::render_with"
+target = "horizon_client_lib::mobs::render::render_with"
 helper = "mob.rs"
 bindings = [
   { name = "m", ty = "&Mob", value = "m" },
@@ -148,7 +148,7 @@ bindings = [
   { name = "atlas", ty = "Atlas", value = "atlas" },
   { name = "light", ty = "u32", value = "light" },
   { name = "data", ty = "&MobData", value = "data" },
-  { name = "extra", ty = "&[(&Part, [f32; 4], u32, u32)]", value = "extra" },
+  { name = "extra", ty = "&[(&Part, [f32; 4], u32, u32, bool)]", value = "extra" },
   { name = "out", ty = "&mut Vec<Vertex>", value = "&mut *out" },
 ]
 
@@ -156,7 +156,7 @@ bindings = [
 [[injection]]
 id = "part"
 kind = "HEAD"
-target = "horizon_client::mobs::render::draw_normals"
+target = "horizon_client_lib::mobs::render::draw_normals"
 helper = "part.rs"
 bindings = [{ name = "out", ty = "&Vec<Vertex>", value = "&*out" }]
 
@@ -255,7 +255,7 @@ bindings = [
 id = "cape"
 kind = "HEAD"
 cancellable = true
-target = "horizon_client::mobs::render::cape"
+target = "horizon_client_lib::mobs::render::cape"
 helper = "cape.rs"
 bindings = [
   { name = "m", ty = "&Mob", value = "m" },
@@ -272,7 +272,7 @@ bindings = [
 id = "campfire-smoke"
 kind = "HEAD"
 cancellable = true
-target = "horizon_client::animate_tick::make_campfire_smoke"
+target = "horizon_client_lib::animate_tick::make_campfire_smoke"
 helper = "campfire_smoke.rs"
 bindings = [{ name = "pos", ty = "[i32; 3]", value = "pos" }]
 
@@ -280,7 +280,7 @@ bindings = [{ name = "pos", ty = "[i32; 3]", value = "pos" }]
 id = "fire-smoke"
 kind = "HEAD"
 cancellable = true
-target = "horizon_client::animate_tick::add"
+target = "horizon_client_lib::animate_tick::add"
 helper = "fire_smoke.rs"
 bindings = [{ name = "ty", ty = "T", value = "ty" }]
 
@@ -356,7 +356,7 @@ id = "setup-draw"
 kind = "HEAD"
 cancellable = true
 priority = 200
-target = "horizon_client::title::Title::draw"
+target = "horizon_client_lib::title::Title::draw"
 helper = "setup_draw.rs"
 bindings = [
   { name = "_title", ty = "&Title", value = "self" },
@@ -371,7 +371,7 @@ id = "setup-click"
 kind = "HEAD"
 cancellable = true
 priority = 200
-target = "horizon_client::title::Title::click"
+target = "horizon_client_lib::title::Title::click"
 helper = "setup_click.rs"
 bindings = [
   { name = "_title", ty = "&mut Title", value = "&mut *self" },

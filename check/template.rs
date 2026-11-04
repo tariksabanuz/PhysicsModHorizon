@@ -151,7 +151,7 @@ pub mod mobs {
             atlas: Atlas,
             light: u32,
             data: &MobData,
-            extra: &[(&Part, [f32; 4], u32, u32)],
+            extra: &[(&Part, [f32; 4], u32, u32, bool)],
             out: &mut Vec<Vertex>,
         ) {
             //MOB//
