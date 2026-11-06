@@ -4,7 +4,7 @@ version = "0.18.0"
 priority = 100
 
 [compatibility]
-horizon_revision = "6475f62f3c834b7489e1816bf47f47ea5eb2b879"
+horizon_revision = "f319701e8c9ab657ff562250b3ba07b2d654e3bc"
 
 # The solver, the pieces and the settings. In the client library, so the mob hooks there and the
 # game's hooks can both reach it.
