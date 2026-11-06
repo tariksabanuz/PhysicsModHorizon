@@ -87,4 +87,4 @@ simulated with a small rigid-body solver (position-based dynamics) against the b
 Inspired by [PhysicsMod](https://modrinth.com/mod/physicsmod) by Haubna; no code or assets from it are
 used. MIT licensed.
 
-Pinned to Horizon `f319701e8c9ab657ff562250b3ba07b2d654e3bc` and horizon-mixins `d9c83d7`.
+Pinned to Horizon `66f3981f522b24c250b21523a70080965b940424` and horizon-mixins `d9c83d7`.
