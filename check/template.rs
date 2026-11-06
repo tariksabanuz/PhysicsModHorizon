@@ -1,9 +1,34 @@
 // Type-checks the bundle's helpers against stubs that copy the real signatures they touch
-// (Horizon 9d979caa). Each helper sits in its target's module, as horizon-mixins puts it.
+// (Horizon 6475f62f). Each helper sits in its target's module, as horizon-mixins puts it.
 #![allow(dead_code, unused_variables, clippy::all)]
 extern crate self as horizon_client;
+extern crate self as horizon_client_render;
 
 pub mod mesher {
+    #[derive(Clone, Copy)]
+    pub struct TerrainVertex { pub pos: [f32; 3], pub(crate) uv: [u16; 2], pub layer: u16, pub light: u16, pub color: u32 }
+    pub struct Info { pub fluid: FluidState }
+    #[derive(Clone, Copy)]
+    pub struct FluidState;
+    #[derive(PartialEq)]
+    pub enum FluidKind { Water, FlowingWater, Lava }
+    impl FluidState { pub fn kind(&self) -> FluidKind { FluidKind::Water } }
+    pub struct MeshTables { pub info: Vec<Info> }
+    pub struct Padded { pub blocks: Vec<u32> }
+    #[derive(Default)]
+    pub struct SectionMesh { pub solid: Vec<TerrainVertex>, pub translucent: Vec<TerrainVertex> }
+    pub struct Chunk { pub x: i32, pub z: i32 }
+    pub struct MeshRender { pub sprite_layers: std::collections::BTreeMap<String, u32> }
+    pub struct MeshScratch { pub padded: Padded }
+    pub struct Mesher<'a> { pub tables: &'a MeshTables, pub render: &'a MeshRender }
+    fn pi(x: i32, y: i32, z: i32) -> usize { 0 }
+    impl Mesher<'_> {
+        pub(crate) fn mesh_reusing(&mut self, region: &[[Option<&Chunk>; 3]; 3], sy: i32, mut out: SectionMesh, scratch: &mut MeshScratch) -> SectionMesh {
+            //FLUID//
+            if let ::core::ops::ControlFlow::Break(__r) = __h_fluid(&mut *self, region, sy, &mut out, &mut *scratch) { return __r; }
+            out
+        }
+    }
     #[repr(C)]
     #[derive(Clone, Copy, Debug)]
     pub struct Vertex {
@@ -21,21 +46,81 @@ pub mod native_horizon_physics {
     //RUNTIME//
 }
 
+pub mod block_entity_render {
+    use crate::mesher::Vertex;
+    use glam::{Mat4, Vec3};
+    pub struct Scene<'a> { pub partial: f32, pub game_time: i64, pub w: std::marker::PhantomData<&'a ()> }
+    enum Kind { None, Banner { color: u32, wall: bool, angle: f32 } }
+    pub struct BlockEntityRenderer;
+    impl BlockEntityRenderer {
+        fn render_one(&self, scene: &Scene, pos: [i32; 3], kind: &Kind, base: Mat4, packed: u8, lights: (Vec3, Vec3), crumbling: bool, world_chests: bool, out: &mut Vec<Vertex>) {
+            //BANNER//
+            if let ::core::ops::ControlFlow::Break(()) = __h_banner(self, scene, pos, kind, base, packed, lights, crumbling, world_chests, &mut *out) { return; }
+        }
+    }
+}
+
+pub mod native_horizon_physics_sway {
+    //SWAY_MODULE//
+}
+
+pub mod wgpu {
+    pub struct ShaderModuleDescriptor<'a> { pub label: Option<&'a str>, pub source: ShaderSource<'a> }
+    pub enum ShaderSource<'a> { Wgsl(std::borrow::Cow<'a, str>), Other }
+    pub struct ShaderModule(pub String);
+}
+
+pub mod gfx {
+    pub mod reuse {
+        pub struct On<'a>(pub &'a ());
+        impl On<'_> {
+            pub fn create_shader_module(&self, descriptor: crate::wgpu::ShaderModuleDescriptor<'_>) -> crate::wgpu::ShaderModule {
+                use crate::wgpu;
+                //FXC//
+                match __h_fxc(self, &descriptor) {
+                    ::core::ops::ControlFlow::Break(v) => return v,
+                    ::core::ops::ControlFlow::Continue(()) => {}
+                }
+                match descriptor.source { wgpu::ShaderSource::Wgsl(t) => wgpu::ShaderModule(t.into_owned()), _ => wgpu::ShaderModule(String::new()) }
+            }
+        }
+    }
+    pub fn outline_width(width: u32) -> f32 { 2.5 }
+    pub mod native_material {
+        const ENTRIES: &str = "";
+        fn vanilla_terrain() -> String { String::new() }
+        fn shader_source(source: &str, tags: &[(u32, u32)], materials: &[(u32, u32)], vertex: bool, displaced: bool) -> String {
+            //SHADER//
+            match __h_shader(source, tags, materials, vertex, displaced) {
+                ::core::ops::ControlFlow::Break(v) => return v,
+                ::core::ops::ControlFlow::Continue(()) => {}
+            }
+            format!("{source}{}{ENTRIES}", vanilla_terrain())
+        }
+    }
+}
+
 pub mod blocks {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum Fluid { None, Water, Lava }
     pub struct StateFacts {
+        pub name: std::sync::Arc<str>,
         pub full_collision: bool,
         pub legacy_solid: bool,
         pub fluid: Fluid,
         pub outline: std::sync::Arc<[[f64; 6]]>,
     }
     pub struct BlockFacts(pub Vec<StateFacts>);
-    impl BlockFacts { pub fn get(&self, id: super::BlockStateId) -> &StateFacts { &self.0[id.0 as usize] } }
+    impl BlockFacts {
+        pub fn get(&self, id: super::BlockStateId) -> &StateFacts { &self.0[id.0 as usize] }
+        pub fn is_air(&self, id: super::BlockStateId) -> bool { id.0 == 0 }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlockStateId(pub u32);
+pub mod horizon_world { pub mod registry { pub use crate::BlockStateId; } }
+
 
 pub mod geometry {
     #[derive(Clone, Copy, Debug, Default)]
@@ -44,15 +129,40 @@ pub mod geometry {
 
 pub mod mobs {
     use crate::geometry::Vec3;
-    pub struct Mob { pub id: u32, pub position: Vec3, pub previous: Vec3, pub health: f32 }
-    impl Mob { pub fn alive(&self) -> bool { self.health > 0.0 } }
-    pub struct MobData;
+    pub struct Mob { pub id: u32, pub position: Vec3, pub previous: Vec3, pub velocity: Vec3, pub yaw: f32, pub on_ground: bool, pub health: f32, pub kind: std::sync::Arc<MobType> }
+    pub struct MobType { pub width: f64 }
+    impl MobType { pub fn layer(&self, key: &str) -> Option<&std::sync::Arc<Part>> { None } }
+    pub struct Animations;
+    pub mod anim {
+        use super::{Animations, Mob, Part};
+        pub struct State;
+        pub fn state(m: &Mob, alpha: f32) -> State { State }
+        pub struct Poses;
+        impl Poses {
+            pub fn new(part: &Part) -> Poses { Poses }
+            pub fn get(&mut self, name: &str) -> &mut [f32; 9] { Box::leak(Box::new([0.0; 9])) }
+        }
+        pub fn setup(m: &Mob, s: &State, poses: &mut Poses, a: &Animations) {}
+    }
+    impl Mob {
+        pub fn alive(&self) -> bool { self.health > 0.0 }
+        pub fn item_by_slot(&self, slot: horizon_world::player_inventory::EquipmentSlot) -> Option<String> { let _ = slot; None }
+    }
+    pub struct MobData { pub animations: Animations }
     pub struct Part;
     pub struct ModelNormals;
-    pub struct Poses;
     pub mod render {
-        use super::{Mob, MobData, ModelNormals, Part, Poses};
+        use super::{Mob, MobData, ModelNormals, Part, anim::{self, Poses}};
         use crate::mesher::Vertex;
+        use std::f32::consts::PI;
+        pub fn draw(part: &Part, base: glam::Mat4, poses: &Poses, uv: [f32; 4], color: u32, light: u32, overlay: u32, out: &mut Vec<Vertex>) {}
+        pub fn cape(m: &Mob, alpha: f32, base: glam::Mat4, uv: [f32; 4], light: u32, data: &MobData, out: &mut Vec<Vertex>) {
+            //CAPE//
+            match __h_cape(m, alpha, base, uv, light, data, &mut *out) {
+                ::core::ops::ControlFlow::Break(()) => return,
+                ::core::ops::ControlFlow::Continue(()) => {}
+            }
+        }
         pub type Atlas<'a> = &'a dyn Fn(&str) -> Option<[f32; 4]>;
         pub fn render_with(
             m: &Mob,
@@ -61,7 +171,7 @@ pub mod mobs {
             atlas: Atlas,
             light: u32,
             data: &MobData,
-            extra: &[(&Part, [f32; 4], u32, u32)],
+            extra: &[(&Part, [f32; 4], u32, u32, bool)],
             out: &mut Vec<Vertex>,
         ) {
             //MOB//
@@ -88,9 +198,96 @@ pub mod mobs {
     }
 }
 
+pub mod animate_tick {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum T { LargeSmoke, Flame }
+    pub fn make_campfire_smoke(pos: [i32; 3]) {
+        //CAMPFIRE_SMOKE//
+        if let ::core::ops::ControlFlow::Break(()) = __h_campfire_smoke(pos) { return; }
+    }
+    fn add(ty: T) {
+        //FIRE_SMOKE//
+        if let ::core::ops::ControlFlow::Break(()) = __h_fire_smoke(ty) { return; }
+    }
+}
+pub mod gizmos {
+    pub struct Line { pub start: [f64; 3], pub end: [f64; 3], pub color: u32, pub width: f32 }
+}
 pub mod hud {
+    use std::collections::HashMap;
     #[derive(Clone, Copy, Debug)]
     pub struct Rect { pub u0: f32, pub v0: f32, pub u1: f32, pub v1: f32, pub w: u32, pub h: u32 }
+    pub struct Font;
+    impl Font { pub fn white(&self) -> Rect { Rect { u0: 0.0, v0: 0.0, u1: 0.0, v1: 0.0, w: 1, h: 1 } } }
+    pub struct HudAtlas { pub sprites: HashMap<String, Rect>, pub font: Font }
+    pub struct HudVertex;
+    pub struct HudBatch { pub vertices: Vec<HudVertex>, pub width: f32, pub height: f32 }
+    impl HudBatch {
+        pub fn fill(&mut self, atlas: &HudAtlas, x: f32, y: f32, w: f32, h: f32, color: u32) {}
+        pub fn fill_gradient(&mut self, atlas: &HudAtlas, (x, y, w, h): (f32, f32, f32, f32), top: u32, bottom: u32) {}
+        pub fn text_width(atlas: &HudAtlas, text: &str) -> f32 { 0.0 }
+        pub fn text(&mut self, atlas: &HudAtlas, text: &str, x: f32, y: f32, color: u32, shadow: bool) -> f32 { 0.0 }
+        pub fn quad_3d(&mut self, p: [[f32; 3]; 4], uv: [[f32; 2]; 4], color: u32) {}
+        pub fn depth_since(&mut self, start: usize, clip: [f32; 4]) {}
+        pub fn scale_since(&mut self, start: usize, cx: f32, cy: f32, sx: f32, sy: f32) {}
+        pub fn clip_since(&mut self, start: usize, x0: f32, y0: f32, x1: f32, y1: f32) {}
+        pub fn quad(&mut self, p: [[f32; 2]; 4], uv: [[f32; 2]; 4], color: u32) {}
+    }
+    pub fn rgba(r: u8, g: u8, b: u8, a: u8) -> u32 { 0 }
+}
+
+pub mod text {
+    pub struct Text;
+    impl Text { pub fn literal(s: impl Into<String>) -> Text { Text } }
+}
+
+pub mod settings {
+    pub struct Settings;
+}
+
+pub mod options_ui {
+    use crate::{settings::Settings, text::{self, Text}};
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum Page { Main, Video }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum Event { ButtonClick, Close }
+    enum Act { None, Done }
+    enum WKind { Button { label: Text, active: bool, act: Act } }
+    struct Widget { x: f32, y: f32, w: f32, h: f32, kind: WKind, list: bool }
+    fn button(x: f32, y: f32, w: f32, label: Text, act: Act) -> Widget {
+        Widget { x, y, w, h: 20.0, kind: WKind::Button { label, active: true, act }, list: false }
+    }
+    #[derive(Default)]
+    pub struct OptionsUi;
+    impl OptionsUi {
+        pub fn page(&self) -> Page { Page::Main }
+        fn layout(&mut self, s: &Settings, w: f32, h: f32) -> (Vec<Widget>, f32, f32, f32) {
+            //OPTIONS_LAYOUT//
+            if let ::core::ops::ControlFlow::Break(r) = __h_options_layout(&mut *self, s, w, h) { return r; }
+            (Vec::new(), 0.0, 0.0, 0.0)
+        }
+    }
+}
+
+pub mod title {
+    use crate::hud::{HudAtlas, HudBatch, rgba};
+    pub struct Title;
+    pub enum Action { None }
+    impl Title {
+        pub fn draw(&self, atlas: &HudAtlas, batch: &mut HudBatch, cursor: (f32, f32), hide_splash: bool) {
+            //SETUP_DRAW//
+            if let ::core::ops::ControlFlow::Break(()) = __h_setup_draw(self, atlas, &mut *batch, cursor, hide_splash) { return; }
+        }
+        pub fn click(&mut self, x: f32, y: f32, size: (f32, f32)) -> (Action, bool) {
+            //SETUP_CLICK//
+            if let ::core::ops::ControlFlow::Break(r) = __h_setup_click(&mut *self, x, y, size) { return r; }
+            (Action::None, false)
+        }
+    }
+}
+
+pub mod native_horizon_physics_setup {
+    //SETUP_MODULE//
 }
 
 pub mod item_render {
@@ -112,10 +309,32 @@ pub mod game {
     enum Dim { Overworld, Nether, End }
     pub struct Resources { facts: BlockFacts }
     impl Resources { fn facts(&self) -> &BlockFacts { &self.facts } }
-    pub struct HudAtlas { pub sprites: HashMap<String, Rect> }
+    pub use crate::hud::HudAtlas;
+    pub struct BlockState { pub name: String, pub properties: std::collections::BTreeMap<String, String> }
+    pub struct Registry;
+    impl Registry { pub fn state(&self, id: BlockStateId) -> Option<&BlockState> { None } }
+    pub struct Assets { pub registry: &'static Registry }
+    pub struct GroundState { pub on_ground: bool }
+    pub struct PlayerMotion {
+        pub swimming: bool,
+        pub position: crate::geometry::Vec3,
+        pub velocity: crate::geometry::Vec3,
+        pub ground: GroundState,
+        pub yaw: f32,
+        pub pitch: f32,
+        pub spectator: bool,
+        pub flying: bool,
+    }
     pub struct UiResources { pub atlas: HudAtlas }
-    pub struct World;
+    pub struct DirtySections;
+    impl DirtySections { pub fn insert(&mut self, (x, sy, z): (i32, i32, i32)) {} }
+    pub struct ColumnLayout;
+    impl ColumnLayout { pub fn min_y(&self) -> i32 { -64 } pub fn height(&self) -> i32 { 384 } }
+    pub struct Weather;
+    impl Weather { pub fn levels(&self, partial: f32) -> (f32, f32) { (0.0, 0.0) } }
+    pub struct World { pub game_time: i64, pub dirty_sections: DirtySections, pub weather: Weather }
     impl World {
+        pub fn layout(&self) -> ColumnLayout { ColumnLayout }
         pub fn block(&self, x: i32, y: i32, z: i32) -> BlockStateId { BlockStateId(0) }
         pub fn is_air(&self, s: BlockStateId) -> bool { s.0 == 0 }
         pub fn light(&self, x: i32, y: i32, z: i32) -> u8 { 0xF0 }
@@ -133,7 +352,24 @@ pub mod game {
     }
     pub struct ItemRenderer;
     impl ItemRenderer { pub fn item_id(&self, item: &str) -> i32 { 0 } }
-    pub struct PackResources { pub item_renderer: ItemRenderer }
+    pub struct RenderAssets { pub sprite_layers: std::collections::BTreeMap<String, u32> }
+    pub struct PackResources { pub item_renderer: ItemRenderer, assets: std::sync::Arc<Assets>, render: std::sync::Arc<RenderAssets> }
+    pub struct HorizonSettings { pub shader_pack: String }
+    pub struct GameSettings { pub horizon: HorizonSettings }
+    pub struct Renderer;
+    impl Renderer { pub fn drop_shader_packs(&mut self) {} }
+    pub type Result<T> = std::result::Result<T, String>;
+    pub struct BlockPos;
+    impl BlockPos { pub fn new(x: i32, y: i32, z: i32) -> BlockPos { BlockPos } }
+    pub struct Behaviours;
+    pub struct GameLevel<'a>(std::marker::PhantomData<&'a ()>);
+    pub struct Ticks;
+    impl Behaviours { pub fn destroy_block(&self, level: &mut GameLevel<'_>, ticks: &mut Ticks, pos: BlockPos, drop: bool) -> bool { true } }
+    pub struct UiState { pub options: crate::options_ui::OptionsUi }
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub enum Screen { Title, Options }
+    pub struct Audio;
+    impl Audio { pub fn play(&mut self, event: &str, at: Option<[f64; 3]>, volume: f32, pitch: f32) { let _ = (event, at, volume, pitch); } }
     pub struct Game<'a> {
         res: std::sync::Arc<Resources>,
         gui: UiResources,
@@ -142,11 +378,48 @@ pub mod game {
         dropped: Vec<ItemEntity>,
         pickups: pickups::Pickups,
         pack: PackResources,
+        player: Option<PlayerMotion>,
+        native_shaders: native_shaders::NativeShaders,
+        settings: GameSettings,
+        renderer: Option<Renderer>,
+        boats: Vec<boats::Boat>,
+        riding: Option<u32>,
+        mobs: Vec<crate::mobs::Mob>,
+        creative: bool,
+        cursor: (f32, f32),
+        ui: UiState,
+        dragging: bool,
+        screen: Screen,
+        remote: Option<u32>,
+        audio: Audio,
         _l: std::marker::PhantomData<&'a ()>,
     }
     impl Game<'_> {
         fn particle_sprite(&self, state: BlockStateId, pos: [i32; 3]) -> Option<(String, u32)> { None }
         fn particle_shape(&self, pos: [i32; 3], state: BlockStateId) -> Vec<[f64; 6]> { Vec::new() }
+        fn eye_position(&self) -> Option<[f64; 3]> { None }
+        fn attack(&mut self) -> bool {
+            //ATTACK//
+            __h_attack(&*self);
+            false
+        }
+        fn break_block(&mut self, pos: [i32; 3]) -> Result<()> {
+            //COLLAPSE//
+            match __h_collapse(&mut *self, pos) {
+                ::core::ops::ControlFlow::Break(r) => return r,
+                ::core::ops::ControlFlow::Continue(()) => {}
+            }
+            Ok(())
+        }
+        fn rain_height(&self, x: i32, z: i32) -> i32 { 64 }
+        fn precipitation(&self, x: i32, y: i32, z: i32) -> Option<bool> { Some(false) }
+        fn frame_hook(&mut self) {
+            //SETUP_LOAD//
+            __h_setup_load(&mut *self);
+        }
+        fn with_level<R>(&mut self, f: impl FnOnce(&Behaviours, &mut GameLevel<'_>, &mut Ticks) -> R) -> R {
+            f(&Behaviours, &mut GameLevel(std::marker::PhantomData), &mut Ticks)
+        }
         fn destroy_particles(&mut self, pos: [i32; 3], state: BlockStateId) {
             //DESTROY//
             match __h_destroy(&mut *self, pos, state) {
@@ -196,6 +469,41 @@ pub mod game {
             pub(super) fn cull_entity_vertices(&self, v: &mut Vec<crate::mesher::Vertex>, start: usize) {}
         }
     }
+    pub mod options {
+        use super::{Game, Screen};
+        use horizon_client::{hud::HudBatch, options_ui::{Event, Page}};
+        pub enum KeyCode { Escape, A }
+        impl PartialEq for KeyCode { fn eq(&self, o: &Self) -> bool { true } }
+        type Result<T> = std::result::Result<T, String>;
+        impl Game<'_> {
+            pub(super) fn gui_size(&self) -> (f32, f32) { (640.0, 345.0) }
+            pub(super) fn handle_option_events(&mut self, events: Vec<Event>) -> Result<()> { Ok(()) }
+            pub(super) fn draw_options(&mut self, batch: &mut HudBatch) {
+                //OPTIONS_DRAW//
+                if let ::core::ops::ControlFlow::Break(()) = __h_options_draw(&mut *self, &mut *batch) { return; }
+            }
+            pub(super) fn options_mouse(&mut self, pressed: bool, right: bool) -> Result<()> {
+                //OPTIONS_MOUSE//
+                if let ::core::ops::ControlFlow::Break(r) = __h_options_mouse(&mut *self, pressed, right) { return r; }
+                Ok(())
+            }
+            pub(super) fn options_drag(&mut self) -> Result<()> {
+                //OPTIONS_DRAG//
+                if let ::core::ops::ControlFlow::Break(r) = __h_options_drag(&mut *self) { return r; }
+                Ok(())
+            }
+            pub(super) fn options_scroll(&mut self, amount: f32) -> Result<()> {
+                //OPTIONS_SCROLL//
+                if let ::core::ops::ControlFlow::Break(r) = __h_options_scroll(&mut *self, amount) { return r; }
+                Ok(())
+            }
+            pub(super) fn options_key(&mut self, key: KeyCode, text: Option<&str>) -> Result<()> {
+                //OPTIONS_KEY//
+                if let ::core::ops::ControlFlow::Break(r) = __h_options_key(&mut *self, key, text) { return r; }
+                Ok(())
+            }
+        }
+    }
     pub mod end {
         use super::{Dim, Game};
         use horizon_client::mesher::Vertex;
@@ -203,6 +511,108 @@ pub mod game {
             pub(super) fn end_geometry(&self, camera: glam::DVec3, out: &mut Vec<Vertex>) {
                 //WORLD//
                 __h_world(self, camera, &mut *out);
+            }
+        }
+    }
+    pub mod lan_particles {
+        use super::Game;
+        use crate::horizon_world::registry::BlockStateId;
+        pub mod play {
+            pub struct ExplosionParticle;
+            pub struct Explode { pub center: [f64; 3], pub radius: f32, pub block_particles: Vec<ExplosionParticle> }
+        }
+        impl Game<'_> {
+            pub(super) fn remote_explode(&mut self, p: &play::Explode) {
+                //EXPLODE//
+                __h_explode(&mut *self, p);
+            }
+        }
+    }
+    pub mod native_shaders {
+        use super::Game;
+        #[derive(Default)]
+        pub(super) struct NativeShaders { pub picked: String, stamp: Option<u64>, looked: Option<std::time::Instant> }
+        impl NativeShaders { pub fn picking(name: &str) -> Self { Self { picked: name.to_owned(), ..Self::default() } } }
+        impl Game<'_> {
+            pub(super) fn tick_native_shader_pack(&mut self, path: &std::path::Path) {
+                //SHADER_PACK//
+                __h_shader_pack(&mut *self);
+            }
+        }
+    }
+    pub mod shader_packs {
+        use super::Game;
+        pub struct PackInputs;
+        impl Game<'_> {
+            pub(super) fn shader_pack_inputs(&mut self, camera: glam::DVec3, partial: f32) -> PackInputs {
+                //BUILTIN//
+                __h_builtin(&mut *self);
+                PackInputs
+            }
+        }
+    }
+    pub mod remote {
+        use super::Game;
+        use crate::horizon_world::registry::BlockStateId;
+        impl Game<'_> {
+            fn server_block(&mut self, pos: [i32; 3], state: i32) {
+                //AIRED//
+                __h_aired(&mut *self, pos, state);
+            }
+        }
+    }
+    pub mod perspective {
+        use super::Game;
+        impl Game<'_> {
+            pub(super) fn player_model_geometry(&self, camera: glam::DVec3, alpha: f64, out: &mut Vec<horizon_client::mesher::Vertex>) {
+                //PLAYER_MODEL//
+                if let ::core::ops::ControlFlow::Break(()) = __h_player_model(self, camera, alpha, &mut *out) { return; }
+            }
+            pub(super) fn camera_view(&mut self, partial: f32) -> Option<(glam::DVec3, f32, f32)> {
+                //CAMERA//
+                if let ::core::ops::ControlFlow::Break(r) = __h_camera(&mut *self, partial) { return r; }
+                None
+            }
+        }
+    }
+    pub mod boats {
+        use super::Game;
+        use horizon_client::mesher::Vertex;
+        pub struct Boat { pub id: u32, pub position: crate::geometry::Vec3, pub previous: crate::geometry::Vec3 }
+        impl Game<'_> {
+            pub(super) fn boat_geometry(&self, camera: glam::DVec3, alpha: f64, out: &mut Vec<Vertex>) {
+                //BOATS//
+                if let ::core::ops::ControlFlow::Break(()) = __h_boats(self, camera, alpha, &mut *out) { return; }
+            }
+        }
+    }
+    pub mod leads {
+        use super::Game;
+        use horizon_client::mesher::Vertex;
+        impl Game<'_> {
+            pub(super) fn leash_geometry(&self, camera: glam::DVec3, alpha: f64, out: &mut Vec<Vertex>) {
+                //LEADS//
+                match __h_leads(self, camera, alpha, &mut *out) {
+                    ::core::ops::ControlFlow::Break(()) => return,
+                    ::core::ops::ControlFlow::Continue(()) => {}
+                }
+            }
+        }
+    }
+    pub mod fishing {
+        use super::Game;
+        use horizon_client::{gizmos::Line, mesher::Vertex};
+        impl Game<'_> {
+            fn hook_position(&self, alpha: f64) -> Option<glam::DVec3> { None }
+            fn rod_hand_position(&self, alpha: f64, size: [u32; 2]) -> Option<glam::DVec3> { None }
+            fn remote_hook_ends(&self, alpha: f64) -> Vec<(glam::DVec3, glam::DVec3)> { Vec::new() }
+            pub(super) fn fishing_line(&self, alpha: f64, size: [u32; 2]) -> Vec<Line> {
+                //FISHING//
+                match __h_fishing(self, alpha, size) {
+                    ::core::ops::ControlFlow::Break(v) => return v,
+                    ::core::ops::ControlFlow::Continue(()) => {}
+                }
+                Vec::new()
             }
         }
     }

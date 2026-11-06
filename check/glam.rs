@@ -27,3 +27,30 @@ impl Mat4 {
     pub fn from_rotation_y(_: f32) -> Self { Mat4 }
 }
 impl Mul for Mat4 { type Output = Mat4; fn mul(self, _: Mat4) -> Mat4 { Mat4 } }
+impl Add for DVec3 { type Output = DVec3; fn add(self, o: DVec3) -> DVec3 { DVec3::new(self.x + o.x, self.y + o.y, self.z + o.z) } }
+impl Vec3 { pub const ZERO: Vec3 = Vec3 { x: 0.0, y: 0.0, z: 0.0 }; }
+#[derive(Clone, Copy, Debug)]
+pub enum EulerRot { ZYX }
+impl Quat {
+    pub fn from_rotation_x(_: f32) -> Self { Quat([0.0; 4]) }
+    pub fn from_rotation_y(_: f32) -> Self { Quat([0.0; 4]) }
+    pub fn from_rotation_z(_: f32) -> Self { Quat([0.0; 4]) }
+    pub fn from_euler(_: EulerRot, a: f32, b: f32, c: f32) -> Self { Quat([0.0; 4]) }
+    pub fn to_euler(self, _: EulerRot) -> (f32, f32, f32) { (0.0, 0.0, 0.0) }
+}
+impl Mul for Quat { type Output = Quat; fn mul(self, _: Quat) -> Quat { self } }
+impl Mat4 { pub fn transform_point3(&self, v: Vec3) -> Vec3 { v } }
+impl DVec3 { pub fn length(self) -> f64 { self.length_squared().sqrt() } }
+impl Vec3 {
+    pub const Y: Vec3 = Vec3 { x: 0.0, y: 1.0, z: 0.0 };
+    pub fn from_array(a: [f32; 3]) -> Self { Self::new(a[0], a[1], a[2]) }
+    pub fn to_array(self) -> [f32; 3] { [self.x, self.y, self.z] }
+    pub fn normalize(self) -> Self { self }
+}
+impl Quat { pub fn from_rotation_arc(_: Vec3, _: Vec3) -> Self { Quat([0.0; 4]) } }
+
+impl Mat4 {
+    pub fn from_scale(_: Vec3) -> Self { Mat4 }
+    pub fn to_cols_array_2d(&self) -> [[f32; 4]; 4] { [[0.0; 4]; 4] }
+}
+impl AddAssign for DVec3 { fn add_assign(&mut self, o: DVec3) { self.x += o.x; self.y += o.y; self.z += o.z; } }
