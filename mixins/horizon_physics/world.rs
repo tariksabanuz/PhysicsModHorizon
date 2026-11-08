@@ -7,8 +7,9 @@ fn horizon_physics_world(game: &crate::game::Game<'_>, camera: glam::DVec3, out:
         hp::load(crate::game::Game::native_config_dir().ok());
     }
     use horizon_client_render::native_horizon_physics_sway as particles;
-    // PVP server compatibility: on a server, none of it.
-    let on = game.native_on(hp::ID) && !(hp::settings().pvp && game.remote.is_some());
+    // PVP server compatibility: on an external server, none of it.
+    let external = game.remote.as_ref().is_some_and(|r| /* externe check */);
+    let on = game.native_on(hp::ID) && !(hp::settings().pvp && external);
     hp::set_enabled(on);
     if !on {
         hp::clear();
