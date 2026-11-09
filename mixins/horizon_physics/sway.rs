@@ -363,6 +363,28 @@ pub fn water_floor(open: f64) -> f64 {
 pub const MARK_STEP: f32 = 0.0001;
 pub const STILL_TOP: f32 = 0.888_888_9 - 0.001;
 
+/// How far the wave under a floating thing (a bobber) lifts and moves it: the lift the boats get,
+/// from the water at `pos` (None where there is no open water under it), at time `t`
+/// (`water_time`), the distance fade measured from `camera`. (sideways x, up, sideways z.)
+pub fn float_lift(pos: [f64; 3], camera: [f64; 3], t: f64, wind: f64, height: f64, water: &dyn Fn(i32, i32, i32) -> bool) -> Option<[f64; 3]> {
+    let (bx, bz) = (pos[0].floor() as i32, pos[2].floor() as i32);
+    let base = pos[1].floor() as i32;
+    let y = [base, base - 1, base + 1].into_iter().find(|y| water(bx, *y, bz) && !water(bx, *y + 1, bz))?;
+    let (fx, fz) = (pos[0] - pos[0].floor(), pos[2] - pos[2].floor());
+    let code = |cx: i32, cz: i32| f64::from(water_code(cx, y, cz, water, y - 16)) / 7.0;
+    let open = code(bx, bz) * (1.0 - fx) * (1.0 - fz)
+        + code(bx + 1, bz) * fx * (1.0 - fz)
+        + code(bx, bz + 1) * (1.0 - fx) * fz
+        + code(bx + 1, bz + 1) * fx * fz;
+    if open <= 0.0 {
+        return None;
+    }
+    let rel = [pos[0] - camera[0], pos[1] - camera[1], pos[2] - camera[2]];
+    let reach = water_reach((rel[0] * rel[0] + rel[1] * rel[1] + rel[2] * rel[2]).sqrt());
+    let m = water_motion_with(pos[0], pos[2], t, open, wind, height);
+    Some([m[1] * reach, (m[0] + 0.04) * reach, m[2] * reach])
+}
+
 /// How open the water is at a surface corner: the corner at section-relative (`cx`, `cz`) of
 /// surface cells at height `y` (`water` says which cells hold water, the section's border
 /// included). 0 at the shore (a corner touching anything but surface water), then by depth: 1
@@ -736,27 +758,30 @@ fn horizon_physics_surface(layer: u32, pos: vec3<f32>, light: vec2<f32>, lightma
     let geo = cross(dpdx(pos), dpdy(pos));
     let fw = length(fwidth(pos.xz));
     if (!HORIZON_PHYSICS_SHADE || horizon_physics_kind(layer) != 5u) { return color; }
+    // A side face of the water (its top moved with the swell, its foot did not) is water too: it
+    // gets the surface's look, not the game's flat texture. Its openness is interpolated between
+    // the marked top and the unmarked foot, so it is taken as open water.
     let up = abs(geo.y) > 0.6 * length(geo);
-    if (!up) { return color; }
+    let water_open = select(max(open, 0.5), open, up);
     let world = pos + frame.camera_position;
     let tw = horizon_physics_water_time();
     let dist = length(pos);
     let reach = horizon_physics_reach(dist);
-    let sea = horizon_physics_sea(open);
-    let s = horizon_physics_swell(world.xz, tw, open);
+    let sea = horizon_physics_sea(water_open);
+    let s = horizon_physics_swell(world.xz, tw, water_open);
     // Seen from under the water: vanilla's look. Under it is where the camera is below this
     // water's surface at the camera's own place, not below this point of it: a crest higher
     // than the eye, seen from above the water, is still seen from above.
-    let floor_here = horizon_physics_floor(open);
+    let floor_here = horizon_physics_floor(water_open);
     let level = world.y - max(s.x - 0.04, -floor_here) * reach;
     let cam = frame.camera_position;
-    let at_cam = level + max(horizon_physics_swell(cam.xz, tw, open).x - 0.04, -floor_here);
+    let at_cam = level + max(horizon_physics_swell(cam.xz, tw, water_open).x - 0.04, -floor_here);
     if (cam.y < at_cam) { return color; }
     let storm = horizon_physics_storm();
     let wind = horizon_physics_wind_dir(tw * 0.02);
     // The surface's normal at this pixel: the swell's slope and the fine waves over it (fewer
     // on a sheltered shore, calmer in calm weather).
-    let rough_water = (0.45 + 0.55 * clamp(open * 3.0, 0.0, 1.0)) * (0.55 + 0.45 * storm);
+    let rough_water = (0.45 + 0.55 * clamp(water_open * 3.0, 0.0, 1.0)) * (0.55 + 0.45 * storm);
     // Gusts roughen the water in drifting patches (cat's paws): darker, rougher water beside calm,
     // glassy streaks.
     let gust = horizon_physics_fbm(world.xz * 0.035 + wind * tw * 0.015);
@@ -804,10 +829,10 @@ fn horizon_physics_surface(layer: u32, pos: vec3<f32>, light: vec2<f32>, lightma
     let moon_dir = normalize(frame.moon_direction);
     let moon = (pow(max(dot(refl, moon_dir), 0.0), 600.0) * 3.0 + pow(max(dot(refl, moon_dir), 0.0), 40.0) * 0.08) * (1.0 - day) * skylight;
     // The water itself: clear and greenish where it is shallow (the shore, a pond), deep blue
-    // where it is deep and open, tinted by the biome's water colour.
+    // where it is deep and water_open, tinted by the biome's water colour.
     let height = clamp(s.x / (0.75 * storm * max(HORIZON_PHYSICS_WAVE_HEIGHT, 0.05)), -1.0, 1.0);
     let tint = color.rgb / max(max(color.r, max(color.g, color.b)), 0.001);
-    let deepness = smoothstep(0.0, 1.0, open);
+    let deepness = smoothstep(0.0, 1.0, water_open);
     let shallow_rgb = vec3(0.08, 0.4, 0.4);
     let deep_rgb = mix(vec3(0.025, 0.12, 0.17), vec3(0.014, 0.075, 0.14), sea);
     var water = mix(shallow_rgb, deep_rgb, deepness);
@@ -839,8 +864,8 @@ fn horizon_physics_surface(layer: u32, pos: vec3<f32>, light: vec2<f32>, lightma
     let cover = clamp(caps * 0.55, 0.0, 0.6);
     let cap_foam = smoothstep(1.0 - cover, 1.0 - cover + 0.1, lace) * smoothstep(0.0, 0.2, cover) * 0.85;
     let streak = 0.0;
-    // The shore's water (the mesher marks it barely open), not the open water nor unmarked water.
-    let shore = smoothstep(0.0, 0.1, open) * (1.0 - smoothstep(0.15, 0.2, open));
+    // The shore's water (the mesher marks it barely water_open), not the water_open water nor unmarked water.
+    let shore = smoothstep(0.0, 0.1, water_open) * (1.0 - smoothstep(0.15, 0.2, water_open));
     let lap = 0.5 + 0.5 * sin(dot(world.xz, vec2(0.37, 0.29)) * 2.0 - tw * 1.3 + horizon_physics_noise(world.xz * 0.7) * 6.0);
     let shore_cover = shore * (lap * 0.6 + 0.4);
     let shore_lace = horizon_physics_fbm(world.xz * 3.7 + vec2(tw * 0.05, -tw * 0.03));
@@ -894,33 +919,56 @@ pub fn shader_leave() {
 /// own source) with the displacement and, for the built-in pack (`source` its stage), the
 /// water's look; None when nothing sways or the text is not the one this was written for.
 pub fn patch(entries: &str, source: &str) -> Option<String> {
-    const AT: &str = "let pos = horizon_material_displace(position + origin, uv, layer, color, light);";
+    // The game's text moved over the Nightlies: each anchor has the spellings it had, the one
+    // that is in the text exactly once is used.
+    fn pick<'a>(entries: &str, options: &[&'a str]) -> Option<&'a str> {
+        options.iter().copied().find(|o| entries.matches(*o).count() == 1)
+    }
     const FIELD: &str = "    @location(14) @interpolate(flat) normal: vec3<f32>,\n}";
-    const RET: &str = "    return horizon_material_out(pos, uv, layer, color, vec2<f32>(light));";
     const SIG: &str = "    light: vec2<f32>) -> HorizonMaterialOut {";
     const BASE: &str = "    out.base = pos;";
     const GRID_CALL: &str = "var out = horizon_material_out(p.position, p.uv, p.layer, p.color, p.light);";
-    const COLOR: &str = "return material(MaterialInput(";
     const COLOR_END: &str = ")).color;";
-    for anchor in [AT, FIELD, RET, SIG, BASE] {
+    // The vertex stage's displacement call, the vertex's own origin a vec3 (before) or a vec4 (now).
+    let at = pick(entries, &[
+        "let pos = horizon_material_displace(position + origin.xyz, uv, layer, color, light);",
+        "let pos = horizon_material_displace(position + origin, uv, layer, color, light);",
+    ])?;
+    let origin = if at.contains("origin.xyz") { "origin.xyz" } else { "origin" };
+    // Where the vertex stage hands the position on: a `return` before, a `var out` now.
+    let ret = pick(entries, &[
+        "    var out = horizon_material_out(pos, uv, layer, color, vec2<f32>(light));",
+        "    return horizon_material_out(pos, uv, layer, color, vec2<f32>(light));",
+    ])?;
+    // The fragment's colour: `return material(..)` before, `let out = material(..)` now.
+    let color_at = pick(entries, &["let out = material(MaterialInput(", "return material(MaterialInput("]);
+    for anchor in [FIELD, SIG, BASE] {
         if entries.matches(anchor).count() != 1 {
             return None;
         }
     }
     let s = current()?;
     let builtin = source.contains(BUILTIN_MARK);
-    let shade = builtin && entries.matches(COLOR).count() == 1 && entries.matches(COLOR_END).count() == 1;
+    let shade = builtin && color_at.is_some() && entries.matches(COLOR_END).count() == 1;
     let w = wgsl_with(&s, shade)?;
+    let ret_new = format!(
+        "{}horizon_material_out(pos, uv, layer, color, vec2<f32>(light), horizon_physics_open(position, layer));",
+        if ret.contains("var out") { "    var out = " } else { "    return " }
+    );
+    let at_new = format!(
+        "let pos = horizon_material_displace(position + {origin}, uv, layer, color, light)\n        + horizon_physics_sway(position + {origin}, position, uv, layer);"
+    );
     let mut patched = entries
-        .replace(AT, "let pos = horizon_material_displace(position + origin, uv, layer, color, light)\n        + horizon_physics_sway(position + origin, position, uv, layer);")
+        .replace(at, &at_new)
         .replace(FIELD, "    @location(14) @interpolate(flat) normal: vec3<f32>,\n    @location(15) hp_open: f32,\n}")
-        .replace(RET, "    return horizon_material_out(pos, uv, layer, color, vec2<f32>(light), horizon_physics_open(position, layer));")
+        .replace(ret, &ret_new)
         .replace(SIG, "    light: vec2<f32>, hp_open: f32) -> HorizonMaterialOut {")
         .replace(BASE, "    out.base = pos;\n    out.hp_open = hp_open;")
         .replace(GRID_CALL, "var out = horizon_material_out(p.position, p.uv, p.layer, p.color, p.light, 0.0);");
-    if shade {
+    if let (true, Some(color_at)) = (shade, color_at) {
+        let head = if color_at.starts_with("return") { "return " } else { "let out = " };
         patched = patched
-            .replace(COLOR, "return horizon_physics_surface(in.layer, in.position, in.light, in.lightmap, in.hp_open, material(MaterialInput(")
+            .replace(color_at, &format!("{head}horizon_physics_surface(in.layer, in.position, in.light, in.lightmap, in.hp_open, material(MaterialInput("))
             .replace(COLOR_END, ")).color);");
     }
     Some(format!("{patched}\n// Horizon Physics: waves, water and swaying plants\n{w}"))
@@ -1026,6 +1074,14 @@ pub fn set_snow_depth(k: f32) {
     SNOW_DEPTH.store(k.to_bits(), std::sync::atomic::Ordering::Relaxed);
 }
 
+static SNOW_DEEP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Thick snow is pressed down deeper (the Snow page's Deep Snow Layers): feet sink up to 0,6 of a
+/// block into it, not 0,3.
+pub fn set_snow_deep(on: bool) {
+    SNOW_DEEP.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn snow_press(feet: [f64; 3], width: f64, dir: [f64; 2], top: impl Fn(i32, i32, i32) -> Option<f64>) -> bool {
     let surface = feet[1];
     let by = (surface - 1e-3).floor() as i32;
@@ -1035,7 +1091,8 @@ pub fn snow_press(feet: [f64; 3], width: f64, dir: [f64; 2], top: impl Fn(i32, i
     }
     // As deep as a foot sinks in vanilla: a layer of snow stands an eighth of a block above what
     // the feet stand on (the thinnest layer: down to almost the ground).
-    let deepest = (height - 1.0 / 32.0).min(0.3).min(height * 0.65);
+    let cap = if SNOW_DEEP.load(std::sync::atomic::Ordering::Relaxed) { 0.6 } else { 0.3 };
+    let deepest = (height - 1.0 / 32.0).min(cap).min(height * 0.65);
     let depth = deepest * f64::from(f32::from_bits(SNOW_DEPTH.load(std::sync::atomic::Ordering::Relaxed))).clamp(0.05, 1.0);
     if depth <= 0.005 {
         return false;

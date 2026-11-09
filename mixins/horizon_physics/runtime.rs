@@ -19,7 +19,7 @@ use crate::mesher::Vertex;
 
 pub const ID: &str = "horizon_physics";
 pub const NAME: &str = "Horizon Physics";
-pub const VERSION: &str = "0.18.0";
+pub const VERSION: &str = "0.20.6";
 pub const DESCRIPTION: &str =
     "By tariksabanuz. Blocks crumble and blow apart, ragdolls, items, smoke, ropes, capes, liquids, waves and swaying plants.";
 
@@ -177,6 +177,19 @@ pub struct Settings {
     /// seven are the mod's own; the rest are made with Create Animation). `anim` is the one used.
     pub anims: [AnimDef; ANIM_SLOTS],
     pub anim_used: u16,
+    /// How fine the physics objects are: 0 normal, 1 high, 2 ultra (more and smaller pieces, more
+    /// solver steps).
+    pub resolution: u8,
+    /// Ragdoll fixes for big (the Wither) and tiny (chickens, bats, bees) mobs.
+    pub ragdoll_fix: bool,
+    /// An explosion under water throws a spout of water up through the surface.
+    pub water_boom: bool,
+    /// A fishing line bows downstream in flowing water.
+    pub rod_current: bool,
+    /// Deep snow (thick layers) is pressed down deeper by feet.
+    pub snow_layers: bool,
+    /// A collapse raises dust and crumbles the high blocks.
+    pub collapse_dust: bool,
 }
 
 impl Default for Settings {
@@ -263,6 +276,12 @@ impl Default for Settings {
             vanilla_smoke: true,
             anims: std::array::from_fn(anim_default),
             anim_used: (1 << BUILTIN_ANIMS.len()) - 1,
+            resolution: 0,
+            ragdoll_fix: true,
+            water_boom: true,
+            rod_current: true,
+            snow_layers: true,
+            collapse_dust: true,
         }
     }
 }
@@ -488,6 +507,10 @@ impl Settings {
         t.push_str(&format!("smoke_opacity={}\n", self.smoke_opacity));
         t.push_str(&format!("vanilla_smoke={}\n", self.vanilla_smoke as u8));
         t.push_str(&format!("anim_used={}\n", self.anim_used));
+        t.push_str(&format!(
+            "resolution={}\nragdoll_fix={}\nwater_boom={}\nrod_current={}\nsnow_layers={}\ncollapse_dust={}\n",
+            self.resolution, self.ragdoll_fix as u8, self.water_boom as u8, self.rod_current as u8, self.snow_layers as u8, self.collapse_dust as u8
+        ));
         for (i, a) in self.anims.iter().enumerate() {
             t.push_str(&format!("anim{i}={},{},{},{}\n", a.motion, a.particle, a.duration, a.amount));
         }
@@ -598,6 +621,12 @@ impl Settings {
                     "smoke_amount" => s.smoke_amount = f.clamp(0.0, 3.0),
                     "smoke_opacity" => s.smoke_opacity = f.clamp(0.1, 2.0),
                     "vanilla_smoke" => s.vanilla_smoke = on,
+                    "resolution" => s.resolution = (f as u8).min(2),
+                    "ragdoll_fix" => s.ragdoll_fix = on,
+                    "water_boom" => s.water_boom = on,
+                    "rod_current" => s.rod_current = on,
+                    "snow_layers" => s.snow_layers = on,
+                    "collapse_dust" => s.collapse_dust = on,
                     "anim_used" => s.anim_used = (f as u16) & ((1 << ANIM_SLOTS) - 1),
                     _ => {}
                 }
@@ -647,7 +676,17 @@ impl Settings {
     /// Pieces a broken block makes: bigger pieces, fewer of them.
     pub fn pieces_per_block(&self) -> usize {
         let _ = PIECES;
-        ((8.0 / f64::from(self.obj_scale.max(0.1)).powf(1.5)).round() as usize).clamp(1, 48)
+        ((8.0 * self.resolution_factor() / f64::from(self.obj_scale.max(0.1)).powf(1.5)).round() as usize).clamp(1, 96)
+    }
+
+    /// How many times more pieces the resolution makes (1 normal, 1,6 high, 2,5 ultra).
+    pub fn resolution_factor(&self) -> f64 {
+        [1.0, 1.6, 2.5][self.resolution as usize % 3]
+    }
+
+    /// Solver steps a frame at this resolution (finer for small, fast pieces).
+    pub fn substeps(&self) -> usize {
+        [SUBSTEPS, 6, 8][self.resolution as usize % 3]
     }
 
     /// How long a broken block's pieces stay at least (seconds); some stay up to `block_var`
@@ -744,6 +783,10 @@ impl Settings {
         self.snow_powder = false;
         self.embers = false;
         self.wind_forces = false;
+        self.water_boom = false;
+        self.rod_current = false;
+        self.snow_layers = false;
+        self.collapse_dust = false;
         self
     }
 }
@@ -1324,6 +1367,12 @@ pub struct Physics {
     pub impacts: Vec<(V3, f64, bool)>,
     /// Ragdolls (dead mobs) at most at once.
     pub ragdoll_limit: usize,
+    /// Solver steps a frame.
+    pub substeps: usize,
+    /// How many times more pieces a fractured mob makes (see `Settings::resolution_factor`).
+    pub resolution: f64,
+    /// Big mobs' joints hold more, tiny mobs stay whole when fractured.
+    pub ragdoll_fix: bool,
 }
 
 impl Default for Physics {
@@ -1340,6 +1389,9 @@ impl Default for Physics {
             gone: Vec::new(),
             impacts: Vec::new(),
             ragdoll_limit: 16,
+            substeps: SUBSTEPS,
+            resolution: 1.0,
+            ragdoll_fix: true,
         }
     }
 }
@@ -1424,7 +1476,8 @@ impl Physics {
             return;
         }
         self.time += dt;
-        let h = dt / SUBSTEPS as f64;
+        let substeps = self.substeps.clamp(1, 16);
+        let h = dt / substeps as f64;
         // Which body belongs to which object, and whether it moves.
         let mut owner = vec![0usize; self.bodies.len()];
         for (oi, o) in self.objects.iter().enumerate() {
@@ -1443,7 +1496,7 @@ impl Physics {
         for b in &mut self.bodies {
             b.hit = 0.0;
         }
-        for _ in 0..SUBSTEPS {
+        for _ in 0..substeps {
             self.substep(h, gravity, world, &owner);
         }
         // Landings: an object that hit something hard makes a sound (then keeps quiet a moment).
@@ -1489,6 +1542,7 @@ impl Physics {
         }
         // Joints of ragdolls; one pulled too far apart tears.
         let limit = self.joint_break;
+        let fix = self.ragdoll_fix;
         for o in &mut self.objects {
             if o.sleeping {
                 continue;
@@ -1499,7 +1553,11 @@ impl Physics {
                 let ra = a.q.rotate(j.ra);
                 let rb = b.q.rotate(j.rb);
                 let corr = (b.x + rb) - (a.x + ra);
-                if limit.is_some_and(|l| corr.len() > l) {
+                // A big mob's parts (the Wither's) swing wide: their joints may stretch in step with
+                // the parts, where the plain limit tore them at the first knock.
+                let reach = a.half.x.max(a.half.y).max(a.half.z) + b.half.x.max(b.half.y).max(b.half.z);
+                let hold = if fix { (reach / 0.7).clamp(1.0, 2.5) } else { 1.0 };
+                if limit.is_some_and(|l| corr.len() > l * hold) {
                     torn.push(k);
                     self.torn.push(a.x + ra + corr * 0.5);
                     continue;
@@ -1994,7 +2052,9 @@ impl Physics {
             let o = v3(f64::from(b.pos[0]), f64::from(b.pos[1]), f64::from(b.pos[2]));
             let color = tint_color(b.tint);
             let up = (o.y + 0.5 - foot.y).max(0.0);
-            let pieces = if b.leaves { split_box([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2, self.rng()) } else { vec![[0.005, 0.005, 0.005, 0.995, 0.995, 0.995]] };
+            // Leaves in clumps; the high blocks of a structure crumble as they come down.
+            let crumble = s.collapse_dust && up > 3.0 && self.rng.next() < 0.3;
+            let pieces = if b.leaves || crumble { split_box([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2, self.rng()) } else { vec![[0.005, 0.005, 0.005, 0.995, 0.995, 0.995]] };
             for piece in pieces {
                 let (c, h, verts) = box_mesh(piece, b.uv, color);
                 let mut body = Body::new(o + c, Quat::IDENTITY, h, verts);
@@ -2048,6 +2108,8 @@ impl Default for Guard {
 pub static RENDER: Guard = Guard::new();
 /// Set while the lead hook draws the game's own leads into its buffer.
 pub static BOATS: Guard = Guard::new();
+/// The fishing bobbers' hook asking the game for its own bobbers (the nested call goes through).
+pub static BOBBER: Guard = Guard::new();
 /// Set while the camera hook asks the game for its own camera.
 pub static CAMERA: Guard = Guard::new();
 /// Set while the player-model hook draws the player itself.
@@ -2097,6 +2159,14 @@ pub static LEADS: Guard = Guard::new();
 
 static CAPTURE: Mutex<Option<Vec<usize>>> = Mutex::new(None);
 static CAPTURING: AtomicBool = AtomicBool::new(false);
+/// PVP server compatibility: the mod's world effects are off while the window plays on someone
+/// else's server (a dedicated server, or a LAN world it joined). The window of a single-player
+/// world is also "connected" (`connected`), but to its own integrated server (`own_server`): there
+/// is no other player to stay fair to, so the effects stay on.
+pub fn pvp_compat_off(setting: bool, connected: bool, own_server: bool) -> bool {
+    setting && connected && !own_server
+}
+
 /// Whether the mod is on in Options > Mods (kept by the frame hook, read by the mob hook).
 static ENABLED: AtomicBool = AtomicBool::new(true);
 
@@ -2351,7 +2421,15 @@ impl Physics {
                 }
                 let (layer, color) = b.verts.first().map_or((0, u32::MAX), |v| (v.layer, v.color));
                 let size = b.half * 2.0;
-                let n = ((size.x * size.y * size.z * 90.0).round() as usize).clamp(2, 7);
+                // A tiny part (a chicken's beak, a bat's wing) stays whole: split, its shards would
+                // be thinner than the least a body can be and swell into boxes.
+                let tiny = size.x.max(size.y).max(size.z) < 0.12;
+                let top = ((7.0 * self.resolution).round() as usize).clamp(7, 20);
+                let n = if tiny && self.ragdoll_fix {
+                    1
+                } else {
+                    ((size.x * size.y * size.z * 90.0 * self.resolution).round() as usize).clamp(2, top)
+                };
                 for unit in split_box([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], n, &mut self.rng) {
                     let (c, h, mut verts) = box_mesh(unit, [lo[0], lo[1], hi[0], hi[1]], color);
                     for v in &mut verts {
@@ -2632,7 +2710,12 @@ pub fn collapse(blocks: &[Falling], foot: [i32; 3], push: [f64; 2]) {
     let len = (push[0] * push[0] + push[1] * push[1]).sqrt();
     let dir = if len > 1e-6 { v3(push[0] / len, 0.0, push[1] / len) } else { v3(1.0, 0.0, 0.0) };
     let foot = v3(f64::from(foot[0]) + 0.5, f64::from(foot[1]), f64::from(foot[2]) + 0.5);
-    with(|s| s.physics.spawn_falling(blocks, foot, dir, &st));
+    with(|s| {
+        s.physics.spawn_falling(blocks, foot, dir, &st);
+        if st.collapse_dust {
+            s.env.collapse_dust(blocks);
+        }
+    });
 }
 
 /// What a block is to a collapse, by its id: 1 the ground (it holds up what stands on it), 2
@@ -2749,6 +2832,9 @@ pub fn frame(dim: u8, camera: [f64; 3], white: [f32; 4], world: &dyn World, out:
         s.physics.joint_break = (st.joint_force < 9.99).then(|| 0.08 + 0.3 * f64::from(st.joint_force));
         s.physics.anim = anim_now(&st);
         s.physics.ragdoll_limit = st.ragdoll_limit as usize;
+        s.physics.substeps = st.substeps();
+        s.physics.resolution = st.resolution_factor();
+        s.physics.ragdoll_fix = st.ragdoll_fix;
         s.physics.step(dt * f64::from(st.sim_speed), st.gravity(), world);
         // A torn joint lets out a little red mist.
         for at in std::mem::take(&mut s.physics.torn) {
@@ -3332,6 +3418,8 @@ pub struct Env {
     pub drops: Vec<Drop>,
     /// Whether the player's feet were in water last frame.
     was_in_water: bool,
+    /// The explosion being made is under water: no fire, no smoke.
+    wet: bool,
 }
 
 impl Default for Env {
@@ -3354,6 +3442,7 @@ impl Default for Env {
             camera: V3::default(),
             drops: Vec::new(),
             was_in_water: false,
+            wet: false,
         }
     }
 }
@@ -3388,10 +3477,11 @@ impl Env {
     /// that already turned to air, and those that will within a moment) are blown away.
     pub fn explode(&mut self, center: V3, radius: f64) {
         let r = radius.clamp(0.5, 12.0);
+        let wet = self.wet;
         let rng = &mut self.rng;
         let mut new = Vec::new();
         // The fireball: white hot in the middle, orange, then dark red as it burns out.
-        let flames = (10.0 + r * 4.0) as usize;
+        let flames = if wet { 0 } else { (10.0 + r * 4.0) as usize };
         for _ in 0..flames {
             let d = rng.unit();
             let x = center + d * rng.range(0.0, r * 0.4);
@@ -3400,14 +3490,14 @@ impl Env {
             let size = rng.range(0.35, 0.6) * (0.7 + r * 0.18);
             new.push(Puff::new(FxKind::Flame, x, v, size, rng.range(0.45, 0.85), hot, [0.62, 0.1, 0.02], rng));
         }
-        let sparks = (16.0 + r * 10.0) as usize;
+        let sparks = if wet { 0 } else { (16.0 + r * 10.0) as usize };
         for _ in 0..sparks {
             let d = rng.unit();
             let v = d * rng.range(5.0, 9.0 + r * 2.0) + v3(0.0, rng.range(2.0, 6.0), 0.0);
             new.push(Puff::new(FxKind::Spark, center + d * 0.3, v, rng.range(0.02, 0.035), rng.range(0.8, 2.2), [1.0, 0.92, 0.6], [1.0, 0.35, 0.05], rng));
         }
         // The smoke after it: dark and thick, rolling up into a column.
-        let smoke = (14.0 + r * 6.0) as usize;
+        let smoke = if wet { 0 } else { (14.0 + r * 6.0) as usize };
         for _ in 0..smoke {
             let d = rng.unit();
             let x = center + d * rng.range(0.0, r * 0.6);
@@ -3587,7 +3677,7 @@ impl Env {
                 continue;
             }
             // Big blasts make fewer pieces per block, so the scene stays light.
-            let per = (st.pieces_per_block() / 2).clamp(2, 6);
+            let per = (st.pieces_per_block() / 2).clamp(2, 6 + 3 * usize::from(st.resolution % 3));
             let per = if blocks.len() > 120 { (per / 2).max(1) } else { per };
             for a in blocks {
                 physics.spawn_blown(&a.boxes, a.pos, a.uv, a.tint, per, &blast, st.lifetime());
@@ -4153,6 +4243,16 @@ pub fn snow_depth() -> f32 {
     settings().snow_depth
 }
 
+/// Deep snow is pressed down deeper (the Snow page's Deep Snow).
+pub fn snow_layers() -> bool {
+    part_on(|s| s.snow && s.snow_layers)
+}
+
+/// A fishing line bows downstream in flowing water.
+pub fn rod_current() -> bool {
+    part_on(|s| s.ropes && s.rod_current)
+}
+
 pub fn ropes_on() -> bool {
     part_on(|s| s.ropes)
 }
@@ -4176,6 +4276,25 @@ pub fn explosion(center: [f64; 3], radius: f32) {
         s.env.explode(c, f64::from(radius));
         // Pieces already lying around are thrown too.
         s.physics.blast(c, f64::from(radius) * 2.5, 0.8, 0);
+    });
+}
+
+/// The explosion packet for a blast under water: the blast of `explosion` without fire or smoke
+/// (it is wet), and a spout of water thrown up through the surface at height `surface`.
+pub fn explosion_wet(center: [f64; 3], radius: f32, surface: f64) {
+    if !explosions_on() {
+        return;
+    }
+    let st = settings();
+    with(|s| {
+        let c = v3(center[0], center[1], center[2]);
+        s.env.wet = true;
+        s.env.explode(c, f64::from(radius));
+        s.env.wet = false;
+        s.physics.blast(c, f64::from(radius) * 2.5, 0.8, 0);
+        if st.water_boom {
+            s.env.water_boom(c, f64::from(radius), surface);
+        }
     });
 }
 
@@ -4600,6 +4719,52 @@ impl Env {
             let v = v3(a.cos() * self.rng.range(0.8, 2.0), up, a.sin() * self.rng.range(0.8, 2.0));
             let life = self.rng.range(1.0, 1.8);
             self.add_drop(x, v, false, life);
+        }
+    }
+
+    /// An explosion of `radius` at `center` under water whose surface is at height `surface`: a
+    /// spout of water thrown up through it, and a ring of froth. The deeper the blast, the weaker
+    /// it breaks through (none from deeper than about three radii).
+    pub fn water_boom(&mut self, center: V3, radius: f64, surface: f64) {
+        let r = radius.clamp(0.5, 12.0);
+        let depth = (surface - center.y).max(0.0);
+        let power = (1.0 - depth / (r * 3.0 + 1.0)).clamp(0.0, 1.0);
+        if power <= 0.05 {
+            return;
+        }
+        let n = ((24.0 + r * 22.0) * power).round().min(220.0) as usize;
+        for _ in 0..n {
+            let a = self.rng.range(0.0, std::f64::consts::TAU);
+            let reach = self.rng.range(0.0, r * 0.5).max(0.05);
+            let x = v3(center.x + a.cos() * reach, surface + 0.05, center.z + a.sin() * reach);
+            // Most of it goes straight up in a column; the rest fans out.
+            let side = self.rng.range(0.1, 1.6) * (0.4 + power);
+            let up = self.rng.range(5.0, 8.5 + r * 2.0) * power.sqrt();
+            let v = v3(a.cos() * side, up, a.sin() * side);
+            let life = self.rng.range(1.4, 2.6);
+            self.add_drop(x, v, false, life);
+        }
+        let froth = ((10.0 + r * 6.0) * power).round() as usize;
+        self.foam(v3(center.x, surface + 0.02, center.z), froth, r * 1.2 + 0.4, 0.22);
+    }
+
+    /// Dust over the blocks of a collapse: two puffs for a block (at most 80 blocks' worth),
+    /// rising and spreading as they thin.
+    pub fn collapse_dust(&mut self, blocks: &[Falling]) {
+        let n = blocks.len().min(80);
+        if n == 0 {
+            return;
+        }
+        let stride = (blocks.len() / n).max(1);
+        for b in blocks.iter().step_by(stride).take(n) {
+            let at = v3(f64::from(b.pos[0]) + 0.5, f64::from(b.pos[1]) + 0.5, f64::from(b.pos[2]) + 0.5);
+            for _ in 0..2 {
+                let rng = &mut self.rng;
+                let d = rng.unit();
+                let g = rng.range(0.5, 0.65);
+                let puff = Puff::new(FxKind::Dust, at + d * 0.4, v3(d.x * 0.8, rng.range(0.2, 0.9), d.z * 0.8), rng.range(0.25, 0.45), rng.range(1.4, 2.6), [g, g * 0.95, g * 0.88], [0.45, 0.43, 0.4], rng);
+                self.puff(puff);
+            }
         }
     }
 
@@ -5760,7 +5925,7 @@ pub const CATEGORIES: [Category; 15] = [
 /// A setting on a page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
-    MaxObjects, McBreak, SimSpeed, Items, ItemSpin, Pvp, ItemBreak, Crack, Sprint, Eat, BlockParticles, ParticleLife, ParticleVar, Deaths, MobLife, MobVar, Anim, JointForce, JointBlood, RagdollLimit, BlockPhysics, Activation, BlockLife, ObjScale, BlockVar, CapeOn, CapeRange, HideCape, Ropes, ImpactVolume, WindVolume, WindForces, Weather, RainAmount, ThunderAmount, WindClear, WindRain, WindThunder, OpRain, OpSnow, OpDust, Collapse, CollapseDrops, CollapseTicks, CollapseLimit, Waves, WaveHeight, Boats, Foam, SwayLeaves, Plants, SwayVines, SwayWater, SwayStrength, PlantPush, WaveSpeed, Punch, Banners, Doors, Projectiles, Explosions, Liquids, LiquidAmount, Splashes, Snow, MobTrails, SnowDepth, SnowPowder, Smoke, Embers, SmokeAmount, SmokeOpacity, VanillaSmoke, AnimMotion, AnimParticle, AnimDuration, AnimAmount,
+    MaxObjects, McBreak, SimSpeed, Items, ItemSpin, Pvp, ItemBreak, Crack, Sprint, Eat, BlockParticles, ParticleLife, ParticleVar, Deaths, MobLife, MobVar, Anim, JointForce, JointBlood, RagdollLimit, BlockPhysics, Activation, BlockLife, ObjScale, BlockVar, CapeOn, CapeRange, HideCape, Ropes, ImpactVolume, WindVolume, WindForces, Weather, RainAmount, ThunderAmount, WindClear, WindRain, WindThunder, OpRain, OpSnow, OpDust, Collapse, CollapseDrops, CollapseTicks, CollapseLimit, Waves, WaveHeight, Boats, Foam, SwayLeaves, Plants, SwayVines, SwayWater, SwayStrength, PlantPush, WaveSpeed, Punch, Banners, Doors, Projectiles, Explosions, Liquids, LiquidAmount, Splashes, Snow, MobTrails, SnowDepth, SnowPowder, Smoke, Embers, SmokeAmount, SmokeOpacity, VanillaSmoke, AnimMotion, AnimParticle, AnimDuration, AnimAmount, Resolution, RagdollFix, WaterBoom, RodCurrent, SnowLayers, CollapseDust,
 }
 
 /// A slider's range and step.
@@ -5883,6 +6048,12 @@ impl Key {
             Key::AnimParticle => format!("Particles: {}", ANIM_PARTICLES[s.anims[anim_edit()].particle as usize % ANIM_PARTICLES.len()]),
             Key::AnimDuration => format!("Duration: {}", decimal(s.anims[anim_edit()].duration)),
             Key::AnimAmount => format!("Particle Amount: {}", s.anims[anim_edit()].amount),
+            Key::Resolution => format!("Physics Resolution: {}", ["Normal", "High", "Ultra"][s.resolution as usize % 3]),
+            Key::RagdollFix => format!("Big & Tiny Mob Ragdoll Fix: {}", on_upper(s.ragdoll_fix)),
+            Key::WaterBoom => format!("Underwater Explosion Spout: {}", on_upper(s.water_boom)),
+            Key::RodCurrent => format!("Fishing Line Follows Current: {}", on_upper(s.rod_current)),
+            Key::SnowLayers => format!("Deep Snow Layers: {}", on_upper(s.snow_layers)),
+            Key::CollapseDust => format!("Collapse Dust & Debris: {}", on_upper(s.collapse_dust)),
             Key::Deaths => format!("Mob Physics: {}", DEATHS[s.deaths as usize % 4]),
             Key::Anim => format!("Animation: {}", anim_name(s, s.anim as usize)),
             Key::BlockPhysics => format!("Block Physics: {}", if s.blocks { ["Blocky", "Particles", "Crumbled", "Fractured"][s.block_style as usize % 4] } else { "Off" }),
@@ -6021,6 +6192,12 @@ impl Key {
             Key::Smoke => s.smoke = !s.smoke,
             Key::Embers => s.embers = !s.embers,
             Key::VanillaSmoke => s.vanilla_smoke = !s.vanilla_smoke,
+            Key::Resolution => s.resolution = (s.resolution + 1) % 3,
+            Key::RagdollFix => s.ragdoll_fix = !s.ragdoll_fix,
+            Key::WaterBoom => s.water_boom = !s.water_boom,
+            Key::RodCurrent => s.rod_current = !s.rod_current,
+            Key::SnowLayers => s.snow_layers = !s.snow_layers,
+            Key::CollapseDust => s.collapse_dust = !s.collapse_dust,
             Key::Deaths => s.deaths = (s.deaths + 1) % 4,
             Key::AnimMotion => { let a = &mut s.anims[anim_edit()]; a.motion = (a.motion + 1) % ANIM_MOTIONS.len() as u8; }
             Key::AnimParticle => { let a = &mut s.anims[anim_edit()]; a.particle = (a.particle + 1) % ANIM_PARTICLES.len() as u8; }
@@ -6116,6 +6293,12 @@ impl Key {
             Key::SmokeAmount => s.smoke_amount = d.smoke_amount,
             Key::SmokeOpacity => s.smoke_opacity = d.smoke_opacity,
             Key::VanillaSmoke => s.vanilla_smoke = d.vanilla_smoke,
+            Key::Resolution => s.resolution = d.resolution,
+            Key::RagdollFix => s.ragdoll_fix = d.ragdoll_fix,
+            Key::WaterBoom => s.water_boom = d.water_boom,
+            Key::RodCurrent => s.rod_current = d.rod_current,
+            Key::SnowLayers => s.snow_layers = d.snow_layers,
+            Key::CollapseDust => s.collapse_dust = d.collapse_dust,
             Key::AnimMotion | Key::AnimParticle | Key::AnimDuration | Key::AnimAmount => { let e = anim_edit(); s.anims[e] = anim_default(e); }
         }
     }
@@ -6136,14 +6319,14 @@ pub fn page_rows(cat: usize) -> Vec<Row> {
     use Row::{Header, Keys, Note};
     match cat {
         0 => vec![Keys(vec![MaxObjects, McBreak]), Keys(vec![SimSpeed]), Keys(vec![Items]), Keys(vec![ItemSpin]), Keys(vec![Pvp]), Keys(vec![ItemBreak]), Keys(vec![Crack, Sprint]), Keys(vec![Eat, BlockParticles]), Keys(vec![ParticleLife, ParticleVar])],
-        1 => vec![Keys(vec![Deaths, MobLife]), Keys(vec![MobVar, Anim]), Keys(vec![JointForce]), Keys(vec![JointBlood]), Keys(vec![RagdollLimit]), Keys(vec![Punch])],
-        2 => vec![Keys(vec![BlockPhysics, Activation]), Keys(vec![BlockLife, ObjScale]), Keys(vec![BlockVar, Anim])],
+        1 => vec![Keys(vec![Deaths, MobLife]), Keys(vec![MobVar, Anim]), Keys(vec![JointForce]), Keys(vec![JointBlood]), Keys(vec![RagdollLimit]), Keys(vec![Punch]), Keys(vec![RagdollFix])],
+        2 => vec![Keys(vec![BlockPhysics, Activation]), Keys(vec![BlockLife, ObjScale]), Keys(vec![BlockVar, Anim]), Keys(vec![Resolution])],
         3 => vec![Keys(vec![Waves, Boats]), Keys(vec![WaveHeight]), Keys(vec![WaveSpeed]), Keys(vec![Foam]), Note("Waves need a Horizon shader pack or the mod's own look.")],
         4 => vec![Keys(vec![SwayLeaves, Plants]), Keys(vec![SwayVines]), Keys(vec![SwayWater]), Keys(vec![SwayStrength]), Keys(vec![PlantPush, Doors]), Note("The wind's strength per weather is on the Weather page.")],
-        5 => vec![Keys(vec![CapeOn, CapeRange]), Keys(vec![HideCape]), Keys(vec![Banners]), Note("Leads and fishing lines hang and swing as ropes:"), Keys(vec![Ropes])],
-        6 => vec![Keys(vec![Projectiles]), Keys(vec![Explosions])],
+        5 => vec![Keys(vec![CapeOn, CapeRange]), Keys(vec![HideCape]), Keys(vec![Banners]), Note("Leads and fishing lines hang and swing as ropes:"), Keys(vec![Ropes]), Keys(vec![RodCurrent])],
+        6 => vec![Keys(vec![Projectiles]), Keys(vec![Explosions]), Keys(vec![WaterBoom])],
         7 => vec![Keys(vec![Liquids]), Keys(vec![LiquidAmount]), Keys(vec![Splashes])],
-        8 => vec![Keys(vec![Snow, MobTrails]), Keys(vec![SnowDepth]), Keys(vec![SnowPowder])],
+        8 => vec![Keys(vec![Snow, MobTrails]), Keys(vec![SnowDepth]), Keys(vec![SnowPowder]), Keys(vec![SnowLayers])],
         9 => vec![Keys(vec![ImpactVolume, WindVolume])],
         10 => vec![Keys(vec![Anim])],
         11 => vec![Keys(vec![Smoke, Embers]), Keys(vec![SmokeAmount]), Keys(vec![SmokeOpacity]), Keys(vec![VanillaSmoke])],
@@ -6160,7 +6343,7 @@ pub fn page_rows(cat: usize) -> Vec<Row> {
             Keys(vec![OpSnow]),
             Keys(vec![OpDust]),
         ],
-        13 => vec![Keys(vec![Collapse, CollapseDrops]), Keys(vec![CollapseTicks]), Keys(vec![CollapseLimit])],
+        13 => vec![Keys(vec![Collapse, CollapseDrops]), Keys(vec![CollapseTicks]), Keys(vec![CollapseLimit]), Keys(vec![CollapseDust])],
         _ => Vec::new(),
     }
 }

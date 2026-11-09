@@ -7,9 +7,9 @@ fn horizon_physics_world(game: &crate::game::Game<'_>, camera: glam::DVec3, out:
         hp::load(crate::game::Game::native_config_dir().ok());
     }
     use horizon_client_render::native_horizon_physics_sway as particles;
-    // PVP server compatibility: on an external server, none of it.
-    let external = game.remote.as_ref().is_some_and(|r| /* externe check */);
-    let on = game.native_on(hp::ID) && !(hp::settings().pvp && external);
+    // PVP server compatibility: on a server, none of it. Single player also joins a server
+    // (its own integrated one, `integrated`), which is not what this setting is about.
+    let on = game.native_on(hp::ID) && !hp::pvp_compat_off(hp::settings().pvp, game.remote.is_some(), game.integrated.is_some());
     hp::set_enabled(on);
     if !on {
         hp::clear();
@@ -129,6 +129,7 @@ fn horizon_physics_world(game: &crate::game::Game<'_>, camera: glam::DVec3, out:
         use horizon_client_render::native_horizon_physics_sway as sway;
         sway::snow_world(game.dim as u64, game.world.layout().min_y());
         sway::set_snow_depth(hp::snow_depth());
+        sway::set_snow_deep(hp::snow_layers());
         if !hp::snow_on() {
             sway::snow_clear();
         } else {

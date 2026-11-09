@@ -391,6 +391,7 @@ pub mod game {
         dragging: bool,
         screen: Screen,
         remote: Option<u32>,
+        integrated: Option<u32>,
         audio: Audio,
         _l: std::marker::PhantomData<&'a ()>,
     }

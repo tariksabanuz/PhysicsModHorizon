@@ -1784,3 +1784,15 @@ fn the_terrain_shader_is_made_ready_for_fxc() {
         assert_eq!(got, want, "axis {axis}");
     }
 }
+
+#[test]
+fn pvp_compatibility_only_applies_to_other_peoples_servers() {
+    // Setting off: never.
+    assert!(!pvp_compat_off(false, true, false));
+    // Setting on: an external or LAN server (connected, no integrated server of its own) is off.
+    assert!(pvp_compat_off(true, true, false));
+    // Single player: connected, but to its own integrated server, so the effects stay on.
+    assert!(!pvp_compat_off(true, true, true));
+    // Not connected at all (title screen, no world): nothing to switch off.
+    assert!(!pvp_compat_off(true, false, false));
+}

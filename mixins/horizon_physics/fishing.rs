@@ -32,10 +32,73 @@ fn horizon_physics_fishing(
         hp::Cell::Air
     };
     let world = hp::FnWorld(cell, |_: i32, _: i32, _: i32| 0u32);
+    // Flowing water: a water block's level (0 a source, up to 7 the thinnest, 8 and more falling)
+    // and, from its neighbours, which way it runs: toward the lower surface (a bigger level).
+    let level = |x: i32, y: i32, z: i32| -> Option<i32> {
+        let state = game.world.block(x, y, z);
+        if facts.get(state).fluid != horizon_client::blocks::Fluid::Water {
+            return None;
+        }
+        Some(
+            game.pack
+                .assets
+                .registry
+                .state(state)
+                .and_then(|s| s.properties.get("level"))
+                .and_then(|v| v.parse::<i32>().ok())
+                .unwrap_or(0),
+        )
+    };
+    let current = |p: glam::DVec3| -> (f64, f64) {
+        let (x, y, z) = (p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
+        let Some(here) = level(x, y, z) else {
+            return (0.0, 0.0);
+        };
+        let mut flow = (0.0, 0.0);
+        for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            if let Some(n) = level(x + dx, y, z + dz) {
+                let d = f64::from(n.min(8) - here.min(8));
+                flow.0 += f64::from(dx) * d;
+                flow.1 += f64::from(dz) * d;
+            }
+        }
+        flow
+    };
+    let follow = hp::rod_current();
+    // On waves the bobber rides the swell (the bobber hook), and so does the line's end on it; the rod's hand stands for the camera
+    // in the distance fade.
+    let wavy = {
+        use horizon_client_render::native_horizon_physics_sway as sway;
+        sway::waves_on().then(|| (sway::water_time(game.world.game_time, alpha), sway::water_wind(), sway::water_height()))
+    };
+    let water = |x: i32, y: i32, z: i32| facts.get(game.world.block(x, y, z)).fluid == horizon_client::blocks::Fluid::Water;
     let mut lines = Vec::new();
     for (hook, hand) in ends {
-        let a = hook + glam::DVec3::new(0.0, 0.25, 0.0);
-        let pts = hp::rope(1, [a.x, a.y, a.z], [hand.x, hand.y, hand.z], 0.05, &world);
+        let lift = wavy
+            .and_then(|(t, wind, height)| {
+                horizon_client_render::native_horizon_physics_sway::float_lift(hook.to_array(), hand.to_array(), t, wind, height, &water)
+            })
+            .map_or(glam::DVec3::ZERO, |l| glam::DVec3::new(l[0], l[1], l[2]));
+        let a = hook + lift + glam::DVec3::new(0.0, 0.25, 0.0);
+        let mut pts = hp::rope(1, [a.x, a.y, a.z], [hand.x, hand.y, hand.z], 0.05, &world);
+        // In flowing water the line bows downstream, most in the middle, the hook end held.
+        if follow {
+            let flow = current(hook);
+            let mag = (flow.0 * flow.0 + flow.1 * flow.1).sqrt();
+            if mag > 1e-3 {
+                let dir = (flow.0 / mag, flow.1 / mag);
+                let bow = (mag * 0.25).min(0.6);
+                let last = pts.len().saturating_sub(1).max(1) as f64;
+                for (i, p) in pts.iter_mut().enumerate() {
+                    let wet = level(p[0].floor() as i32, p[1].floor() as i32, p[2].floor() as i32).is_some();
+                    if wet {
+                        let k = bow * (std::f64::consts::PI * i as f64 / last).sin();
+                        p[0] += dir.0 * k;
+                        p[2] += dir.1 * k;
+                    }
+                }
+            }
+        }
         for w in pts.windows(2) {
             lines.push(horizon_client::gizmos::Line { start: w[0], end: w[1], color: 0xFF00_0000, width });
         }

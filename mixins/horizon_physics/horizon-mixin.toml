@@ -1,10 +1,10 @@
 [mod]
 id = "horizon_physics"
-version = "0.18.0"
+version = "0.20.6"
 priority = 100
 
 [compatibility]
-horizon_revision = "66f3981f522b24c250b21523a70080965b940424"
+horizon_revision = "2ebf00a0281c592f79191e76fce0e7d522c6f425"
 
 # The solver, the pieces and the settings. In the client library, so the mob hooks there and the
 # game's hooks can both reach it.
@@ -237,6 +237,21 @@ bindings = [
   { name = "out", ty = "&mut Vec<Vertex>", value = "&mut *out" },
 ]
 
+# FishingHookRenderer's bobber rides the waves: lifted and moved with the swell under it, the
+# way the boats are.
+[[injection]]
+id = "bobber"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::fishing::Game<'_>::fishing_geometry"
+helper = "bobber.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "self" },
+  { name = "camera", ty = "glam::DVec3", value = "camera" },
+  { name = "alpha", ty = "f64", value = "alpha" },
+  { name = "out", ty = "&mut Vec<Vertex>", value = "&mut *out" },
+]
+
 # FishingHookRenderer's line as a rope.
 [[injection]]
 id = "fishing"
@@ -308,19 +323,22 @@ bindings = [
   { name = "scratch", ty = "&mut MeshScratch", value = "&mut *scratch" },
 ]
 
-# A Horizon shader pack's terrain shader, with the waves and sway.
+# A Horizon shader pack's terrain shader, with the waves and sway. Hooked on `module`, which builds
+# the pack's material module: `shader_source` takes its stage flags as a destructured tuple now,
+# and a binding cannot name those.
 [[injection]]
 id = "shader"
 kind = "HEAD"
 cancellable = true
-target = "horizon_client_render::gfx::native_material::shader_source"
+target = "horizon_client_render::gfx::native_material::module"
 helper = "shader.rs"
 bindings = [
-  { name = "source", ty = "&str", value = "source" },
+  { name = "stage", ty = "&horizon_shader_api::check::CheckedStage", value = "stage" },
   { name = "tags", ty = "&[(u32, u32)]", value = "tags" },
   { name = "materials", ty = "&[(u32, u32)]", value = "materials" },
   { name = "vertex", ty = "bool", value = "vertex" },
   { name = "displaced", ty = "bool", value = "displaced" },
+  { name = "api", ty = "horizon_shader_api::Api", value = "api" },
 ]
 
 # DirectX 12 (FXC): Horizon's own terrain shader made ready for FXC before the renderer builds
