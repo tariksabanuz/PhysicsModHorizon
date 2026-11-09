@@ -1,10 +1,10 @@
 [mod]
 id = "horizon_physics"
-version = "0.20.6"
+version = "0.20.7"
 priority = 100
 
 [compatibility]
-horizon_revision = "2ebf00a0281c592f79191e76fce0e7d522c6f425"
+horizon_revision = "fdc87aecdbd116bf1e08adcd062fcbaea8c2e2ca"
 
 # The solver, the pieces and the settings. In the client library, so the mob hooks there and the
 # game's hooks can both reach it.
