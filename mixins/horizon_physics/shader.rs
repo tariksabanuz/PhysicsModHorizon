@@ -7,11 +7,11 @@ fn horizon_physics_shader(
     materials: &[(u32, u32)],
     vertex: bool,
     displaced: bool,
-    api: horizon_shader_api::Api,
+    line: (horizon_shader_api::Api, bool),
 ) -> ::core::ops::ControlFlow<Result<naga::Module, String>> {
     use crate::native_horizon_physics_sway as sway;
     let source = stage.source.as_str();
-    let text = shader_source(source, tags, materials, (vertex, displaced), api);
+    let text = shader_source(source, tags, materials, (vertex, displaced), line);
     // The text is the pack's source, then the game's terrain: only the game's part is patched.
     // The game's terrain in it, ready for DirectX 12's FXC.
     let text = sway::fxc_terrain(&text).unwrap_or(text);

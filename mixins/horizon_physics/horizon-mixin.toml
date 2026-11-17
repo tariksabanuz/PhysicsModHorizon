@@ -1,10 +1,10 @@
 [mod]
 id = "horizon_physics"
-version = "0.20.7"
+version = "0.20.9"
 priority = 100
 
 [compatibility]
-horizon_revision = "fdc87aecdbd116bf1e08adcd062fcbaea8c2e2ca"
+horizon_revision = "9f42064c11efe7ef3e5ed2baad7ddc2a3b36eea0"
 
 # The solver, the pieces and the settings. In the client library, so the mob hooks there and the
 # game's hooks can both reach it.
@@ -58,7 +58,7 @@ bindings = [
 [[injection]]
 id = "attack"
 kind = "HEAD"
-target = "horizon_client::game::Game<'_>::attack"
+target = "horizon_client::game::melee::Game<'_>::attack"
 helper = "attack.rs"
 bindings = [{ name = "game", ty = "&crate::game::Game<'_>", value = "&*self" }]
 
@@ -113,7 +113,7 @@ bindings = [
 id = "collapse"
 kind = "HEAD"
 cancellable = true
-target = "horizon_client::game::Game<'_>::break_block"
+target = "horizon_client::game::block_breaking::Game<'_>::break_block"
 helper = "collapse.rs"
 bindings = [
   { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
@@ -125,7 +125,7 @@ bindings = [
 id = "destroy"
 kind = "HEAD"
 cancellable = true
-target = "horizon_client::game::Game<'_>::destroy_particles"
+target = "horizon_client::game::block_particles::Game<'_>::destroy_particles"
 helper = "destroy.rs"
 bindings = [
   { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
@@ -338,7 +338,7 @@ bindings = [
   { name = "materials", ty = "&[(u32, u32)]", value = "materials" },
   { name = "vertex", ty = "bool", value = "vertex" },
   { name = "displaced", ty = "bool", value = "displaced" },
-  { name = "api", ty = "horizon_shader_api::Api", value = "api" },
+  { name = "line", ty = "(horizon_shader_api::Api, bool)", value = "line" },
 ]
 
 # DirectX 12 (FXC): Horizon's own terrain shader made ready for FXC before the renderer builds
@@ -387,7 +387,7 @@ id = "setup-draw"
 kind = "HEAD"
 cancellable = true
 priority = 200
-target = "horizon_client_lib::title::Title::draw"
+target = "horizon_client_lib::title::Title::draw_with_items"
 helper = "setup_draw.rs"
 bindings = [
   { name = "_title", ty = "&Title", value = "self" },
@@ -417,7 +417,7 @@ bindings = [
 id = "crack"
 kind = "HEAD"
 cancellable = true
-target = "horizon_client::game::Game<'_>::crack_particle"
+target = "horizon_client::game::block_particles::Game<'_>::crack_particle"
 helper = "crack.rs"
 bindings = [
   { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
